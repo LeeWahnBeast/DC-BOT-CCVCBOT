@@ -25,6 +25,10 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
           score: int
           bait: {name, luck, expires_at} | None
           last_cast: float           # epoch giây của lần câu gần nhất
+          level: int                  # cấp độ người chơi, bắt đầu từ 1
+          exp: int                     # EXP hiện có (đã trừ phần dùng để lên cấp)
+          energy: int                  # thể lực hiện có (thanh năng lượng riêng, hao theo lần bấm "Kéo!")
+          energy_updated_at: float     # epoch giây lần cuối tính hồi thể lực (dùng để hồi lazy theo thời gian)
 
 Đổi DB_ROOT nếu bot đã có sẵn nhánh khác.
 """
@@ -83,6 +87,13 @@ def _default_data() -> dict:
         "score": 0,
         "bait": None,
         "last_cast": 0.0,
+        "level": 1,
+        "exp": 0,
+        # 500 phải khớp với ENERGY_BASE (thể lực tối đa ở level 1) trong
+        # fishing_cog.py — energy_updated_at=0.0 nên lần đầu apply_energy_regen()
+        # sẽ thấy energy đã đầy (>= max) và chỉ cập nhật lại mốc thời gian, an toàn.
+        "energy": 500,
+        "energy_updated_at": 0.0,
     }
 
 

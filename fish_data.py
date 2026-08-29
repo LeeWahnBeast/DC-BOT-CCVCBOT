@@ -218,6 +218,26 @@ def _build_fish() -> tuple[list[FishSpecies], dict[str, FishSpecies], dict[str, 
 ALL_FISH, FISH_BY_KEY, FISH_BY_TIER = _build_fish()
 
 
+def _compute_boss_keys() -> set[str]:
+    """Con cá đắt nhất trong mỗi tier (đã có dữ liệu) được coi là 'Boss' của
+    tier đó — vừa hiếm nhất (do trọng số random theo giá trong roll_fish),
+    vừa đáng để hiển thị tên nổi bật trong khung Kéo khi câu trúng."""
+    boss_keys: set[str] = set()
+    for fishes in FISH_BY_TIER.values():
+        if not fishes:
+            continue
+        boss = max(fishes, key=lambda f: f.price)
+        boss_keys.add(boss.key)
+    return boss_keys
+
+
+BOSS_FISH_KEYS: set[str] = _compute_boss_keys()
+
+
+def is_boss_fish(fish_key: str) -> bool:
+    return fish_key in BOSS_FISH_KEYS
+
+
 def tiers_unlocked_for_pull(pull: int) -> list[FishTier]:
     """Trả về các tier mà 1 cần câu với lực kéo `pull` có thể câu được
     (chỉ tính tier đã có dữ liệu cá thật, bỏ qua tier còn rỗng)."""

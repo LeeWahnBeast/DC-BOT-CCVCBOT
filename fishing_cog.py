@@ -50,7 +50,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from firebase_db import OWNER_IDS, aget_user_data, asave_user_data
-from fish_data import ALL_FISH, FISH_BY_KEY, FISH_BY_TIER, TIERS, FishSpecies, tiers_unlocked_for_pull
+from fish_data import (
+    ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, TIERS, FishSpecies,
+    tiers_unlocked_for_pull,
+)
 from rod_data import DEFAULT_ROD_KEY, RODS, ROD_LIST, Rod
 
 ASSET_DIR = Path(__file__).parent / "assets"
@@ -123,6 +126,80 @@ REEL_TIMEOUT_SECONDS = 45.0        # không thao tác quá lâu -> hết hạn c
 IDLE_TENSION_PER_SECOND = 3.0      # % độ căng dây tăng thêm mỗi giây KHÔNG bấm "Kéo!"
 IDLE_TICK_SECONDS = 1.0            # tần suất kiểm tra/tăng tension khi đứng yên
 
+# ---------------------------------------------------------------------------
+# Thể lực (thanh năng lượng) — TÁCH RIÊNG với "độ căng dây câu" ở trên.
+# Hao theo LẦN BẤM NÚT "Kéo!" (mỗi cái bấm hợp lệ -1 thể lực), tự hồi dần
+# theo thời gian thực (không phụ thuộc vào có đang câu hay không).
+# ---------------------------------------------------------------------------
+ENERGY_BASE = 500          # thể lực tối đa ở level 1
+ENERGY_PER_LEVEL = 50       # mỗi level cộng thêm bấy nhiêu thể lực tối đa (có thể chỉnh)
+ENERGY_REGEN_MINUTES = 5    # tự hồi +1 thể lực mỗi X phút
+
+# ---------------------------------------------------------------------------
+# Level / EXP — câu cá thành công thì cộng EXP theo giá trị con cá (cá mắc
+# hơn = nhiều EXP hơn). Số EXP cần để lên level tăng dần theo level.
+# ---------------------------------------------------------------------------
+EXP_BASE = 100               # EXP cần để lên từ level 1 -> level 2
+EXP_PER_LEVEL_STEP = 50       # mỗi level, EXP cần lên cấp tiếp theo tăng thêm bấy nhiêu
+EXP_PER_FISH_PRICE = 5_000    # quy đổi: cứ 5.000 Vàng giá cá = 1 EXP (tối thiểu 5 EXP/con)
+
+
+def max_energy_for_level(level: int) -> int:
+    return ENERGY_BASE + max(0, level - 1) * ENERGY_PER_LEVEL
+
+
+def exp_needed_for_level(level: int) -> int:
+    """Số EXP cần để đi từ `level` lên `level + 1`."""
+    return EXP_BASE + max(0, level - 1) * EXP_PER_LEVEL_STEP
+
+
+def exp_for_fish(fish: FishSpecies) -> int:
+    return max(5, fish.price // EXP_PER_FISH_PRICE)
+
+
+def add_exp(data: dict, exp_gain: int) -> tuple[dict, bool, int]:
+    """Cộng EXP vào `data`, tự động lên level (có thể lên nhiều level cùng
+    lúc nếu EXP dư nhiều — ví dụ câu được cá cực hiếm). Trả về
+    (data đã cập nhật, có lên cấp hay không, số cấp đã lên)."""
+    level = data.get("level", 1)
+    exp = data.get("exp", 0) + exp_gain
+    levels_gained = 0
+    while exp >= exp_needed_for_level(level):
+        exp -= exp_needed_for_level(level)
+        level += 1
+        levels_gained += 1
+    data["level"] = level
+    data["exp"] = exp
+    return data, levels_gained > 0, levels_gained
+
+
+def apply_energy_regen(data: dict) -> dict:
+    """Hồi thể lực dần theo thời gian thực. Tính kiểu "lazy" ngay khi đọc
+    dữ liệu (dựa vào energy_updated_at) thay vì chạy 1 vòng lặp nền quét
+    toàn bộ user mỗi phút — vừa nhẹ vừa chính xác theo đúng thời gian thực
+    tế đã trôi qua kể từ lần cuối user tương tác."""
+    now = time.time()
+    level = data.get("level", 1)
+    max_e = max_energy_for_level(level)
+    energy = data.get("energy", max_e)
+    last = data.get("energy_updated_at", now)
+
+    if energy >= max_e:
+        data["energy"] = max_e
+        data["energy_updated_at"] = now
+        return data
+
+    interval = ENERGY_REGEN_MINUTES * 60
+    elapsed = now - last
+    gained = int(elapsed // interval)
+    if gained > 0:
+        energy = min(max_e, energy + gained)
+        last += gained * interval  # giữ lại phần dư thời gian chưa đủ 1 tick
+
+    data["energy"] = energy
+    data["energy_updated_at"] = last
+    return data
+
 
 def roll_fish(rod: Rod) -> FishSpecies:
     """Chọn 1 con cá theo cấp mà lực kéo của cần hiện có thể tiếp cận.
@@ -176,6 +253,7 @@ def build_fail_view(
     rank_label: str,
     rank_badge: str,
     reason: str = "Con cá đã giật đứt dây và bơi mất tiêu!",
+    level_info: Optional[dict] = None,
 ) -> tuple[discord.ui.LayoutView, discord.File]:
     file = discord.File(ROD_BREAK_IMAGE, filename="can_gay.png")
 
@@ -194,6 +272,11 @@ def build_fail_view(
     container.add_item(discord.ui.TextDisplay(
         f"💥 **RẮC! Cần câu của bạn đã bị gãy!**\n{reason}"
     ))
+    if level_info:
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"🔋 **Thể lực:** `{level_info['energy']}/{level_info['max_energy']}`"
+        ))
     view.add_item(container)
     return view, file
 
@@ -207,14 +290,20 @@ def build_success_view(
     bait_name: Optional[str] = None,
     bait_luck: float = 0.0,
     bait_time_left: Optional[str] = None,
+    is_boss: bool = False,
+    level_info: Optional[dict] = None,
 ) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
-    container = discord.ui.Container(accent_colour=discord.Colour.gold())
+    container = discord.ui.Container(
+        accent_colour=discord.Colour.dark_purple() if is_boss else discord.Colour.gold()
+    )
 
     header = (
         f"{E.TOP3} **{member.display_name}** {rank_badge} `[{rank_label}]`\n"
         f"🎣 **Cần:** {rod.emoji} `{rod.name}`"
     )
+    if is_boss:
+        header = f"👑🐉 **ĐÃ CÂU ĐƯỢC BOSS!** 👑🐉\n" + header
     if bait_name:
         header += (
             f"\n✨ **Mồi đang dùng:** {E.BAIT} **{bait_name}** "
@@ -228,6 +317,13 @@ def build_success_view(
         f"**Khối lượng:** `{fish.weight_label}`\n"
         f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / con"
     ))
+    if level_info:
+        container.add_item(discord.ui.Separator())
+        exp_line = f"✨ **+{level_info['exp_gained']} EXP**"
+        if level_info.get("leveled_up"):
+            exp_line += f"\n🎉 **LÊN CẤP {level_info['new_level']}!** Thể lực đã được hồi đầy."
+        exp_line += f"\n🔋 **Thể lực:** `{level_info['energy']}/{level_info['max_energy']}`"
+        container.add_item(discord.ui.TextDisplay(exp_line))
     container.add_item(discord.ui.Separator())
     container.add_item(discord.ui.TextDisplay(
         f"# {E.FISH_NUMBER}\nDùng `/bán` để đổi cá trong kho ra Vàng."
@@ -251,6 +347,9 @@ class ReelView(discord.ui.LayoutView):
         bait_name: Optional[str],
         bait_time_left: Optional[str],
         on_finish,
+        is_boss: bool = False,
+        energy: int = 0,
+        max_energy: int = ENERGY_BASE,
     ):
         super().__init__(timeout=REEL_TIMEOUT_SECONDS)
         self.member = member
@@ -261,7 +360,11 @@ class ReelView(discord.ui.LayoutView):
         self.rank_badge = rank_badge
         self.bait_name = bait_name
         self.bait_time_left = bait_time_left
-        self.on_finish = on_finish  # async callback(success: bool)
+        self.on_finish = on_finish  # async callback(success: bool | None, energy_used: int) -> dict
+        self.is_boss = is_boss
+        self.energy = energy            # thể lực còn lại tại thời điểm bắt đầu câu (snapshot cục bộ)
+        self.max_energy = max_energy
+        self.energy_spent = 0            # số thể lực đã tiêu trong ván này (số lần bấm Kéo hợp lệ)
 
         self.target, _ = compute_challenge(rod, fish)
         self.progress = 0.0
@@ -300,15 +403,16 @@ class ReelView(discord.ui.LayoutView):
                 self._idle_tick.stop()
                 self.clear_items()
                 self.stop()
+                result = await self.on_finish(False, self.energy_spent)
                 view, file = build_fail_view(
                     self.member, self.rod, self.rank_label, self.rank_badge,
                     reason="Bạn đứng câu quá lâu không kéo, dây căng hết cỡ rồi đứt phựt!",
+                    level_info=result,
                 )
                 try:
                     await self.message.edit(view=view, attachments=[file])
                 except discord.HTTPException:
                     pass
-                await self.on_finish(False)
                 return
 
             self._render()
@@ -326,6 +430,8 @@ class ReelView(discord.ui.LayoutView):
             f"**Cần:** {self.rod.emoji} `{self.rod.name}` "
             f"(Độ dài dây câu: `{self.rod.line_len}`)"
         )
+        if self.is_boss:
+            header = f"👑🐉 **BOSS XUẤT HIỆN: {self.fish.name}!** 👑🐉\n" + header
         if self.bait_name:
             header += f"\n✨ Mồi: {E.BAIT} **{self.bait_name}** - Còn `{self.bait_time_left}`"
         container.add_item(discord.ui.TextDisplay(header))
@@ -333,11 +439,13 @@ class ReelView(discord.ui.LayoutView):
 
         progress_ratio = min(1.0, self.progress / self.target) if self.target else 0.0
         tension_ratio = min(1.0, self.tension / self.tension_max)
+        energy_ratio = (self.energy / self.max_energy) if self.max_energy else 0.0
         container.add_item(discord.ui.TextDisplay(
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
             f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
             f"Tiến độ kéo cá: `{make_bar(progress_ratio)}` {progress_ratio:.0%}\n"
-            f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}"
+            f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}\n"
+            f"🔋 Thể lực: `{make_bar(energy_ratio)}` {self.energy}/{self.max_energy}"
         ))
         container.add_item(discord.ui.Separator())
 
@@ -371,6 +479,13 @@ class ReelView(discord.ui.LayoutView):
                 ephemeral=True,
             )
             return
+        if self.energy <= 0:
+            await interaction.response.send_message(
+                "🔋 Bạn đã hết thể lực rồi, phải nghỉ tay cho thể lực hồi lại đã "
+                "mới kéo tiếp được (tự hồi dần theo thời gian)!",
+                ephemeral=True,
+            )
+            return
         self.last_click = now
 
         async with self._lock:
@@ -386,6 +501,9 @@ class ReelView(discord.ui.LayoutView):
             tension_gain = 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4)
             self.tension += max(1.0, tension_gain)
 
+            self.energy -= 1
+            self.energy_spent += 1
+
             if self.progress >= self.target:
                 self.finished = True
                 self._idle_tick.stop()
@@ -398,22 +516,38 @@ class ReelView(discord.ui.LayoutView):
                 return
 
             self._render()
-            await interaction.response.edit_message(view=self)
+            try:
+                await interaction.response.edit_message(view=self)
+            except discord.HTTPException:
+                if self.message:
+                    try:
+                        await self.message.edit(view=self)
+                    except discord.HTTPException:
+                        pass
 
     async def _finish(self, interaction: discord.Interaction, success: bool) -> None:
         self.clear_items()
         self.stop()
-        if success:
-            view = build_success_view(
-                self.member, self.rod, self.rank_label, self.rank_badge, self.fish,
-                bait_name=self.bait_name, bait_luck=self.luck_bonus,
-                bait_time_left=self.bait_time_left,
-            )
-            await interaction.response.edit_message(view=view, attachments=[])
-        else:
-            view, file = build_fail_view(self.member, self.rod, self.rank_label, self.rank_badge)
-            await interaction.response.edit_message(view=view, attachments=[file])
-        await self.on_finish(success)
+        # Gọi on_finish TRƯỚC khi build view kết quả, để lấy EXP/level/thể lực
+        # mới nhất và hiển thị luôn trong CÙNG 1 lần edit (không gửi thêm tin nhắn).
+        result = await self.on_finish(success, self.energy_spent)
+        try:
+            if success:
+                view = build_success_view(
+                    self.member, self.rod, self.rank_label, self.rank_badge, self.fish,
+                    bait_name=self.bait_name, bait_luck=self.luck_bonus,
+                    bait_time_left=self.bait_time_left, is_boss=self.is_boss,
+                    level_info=result,
+                )
+                await interaction.response.edit_message(view=view, attachments=[])
+            else:
+                view, file = build_fail_view(
+                    self.member, self.rod, self.rank_label, self.rank_badge,
+                    level_info=result,
+                )
+                await interaction.response.edit_message(view=view, attachments=[file])
+        except discord.HTTPException:
+            pass
 
     async def on_timeout(self) -> None:
         async with self._lock:
@@ -432,7 +566,7 @@ class ReelView(discord.ui.LayoutView):
                     await self.message.edit(view=self)
                 except discord.HTTPException:
                     pass
-            await self.on_finish(None)
+            await self.on_finish(None, self.energy_spent)
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +895,7 @@ class CauCaVanCan(commands.Cog):
         await interaction.response.defer()
 
         data = await aget_user_data(interaction.user.id)
+        data = apply_energy_regen(data)
 
         now = time.time()
         remaining = CAST_COOLDOWN_SECONDS - (now - data["last_cast"])
@@ -769,6 +904,15 @@ class CauCaVanCan(commands.Cog):
                 f"⏳ Cần câu đang hồi chiêu, chờ thêm `{remaining:.1f}s` nữa nhé!",
                 ephemeral=True,
             )
+            return
+
+        if data.get("energy", 0) <= 0 and interaction.user.id not in OWNER_IDS:
+            await interaction.followup.send(
+                f"🔋 Bạn đã hết thể lực rồi! Thể lực tự hồi theo thời gian "
+                f"(mỗi `{ENERGY_REGEN_MINUTES}` phút +1), quay lại sau nhé!",
+                ephemeral=True,
+            )
+            await asave_user_data(interaction.user.id, data)
             return
 
         rod = RODS.get(data["rod"], RODS[DEFAULT_ROD_KEY])
@@ -788,23 +932,57 @@ class CauCaVanCan(commands.Cog):
         await asave_user_data(interaction.user.id, data)
 
         fish = roll_fish(rod)
+        is_boss = fish.key in BOSS_FISH_KEYS
         rank_label, rank_badge = rank_for_score(data["score"])
+        level = data.get("level", 1)
+        energy = data.get("energy", 0)
+        max_energy = max_energy_for_level(level)
 
-        async def on_finish(success: Optional[bool]) -> None:
+        async def on_finish(success: Optional[bool], energy_used: int) -> dict:
+            """Chạy khi ván câu kết thúc (bắt được / đứt dây / hết giờ).
+            Trừ thể lực đã tiêu, cộng EXP + xử lý lên cấp nếu câu thành công,
+            rồi trả về thông tin để hiển thị trong khung kết quả."""
             fresh = await aget_user_data(interaction.user.id)
+            fresh = apply_energy_regen(fresh)  # hồi thêm nếu có thời gian trôi qua trong lúc câu
+            fresh["energy"] = max(0, fresh.get("energy", 0) - energy_used)
+
+            result = {
+                "exp_gained": 0,
+                "leveled_up": False,
+                "new_level": fresh.get("level", 1),
+                "energy": fresh["energy"],
+                "max_energy": max_energy_for_level(fresh.get("level", 1)),
+            }
+
             if success is True:
                 inv = fresh.get("inventory", {})
                 inv[fish.key] = inv.get(fish.key, 0) + 1
                 fresh["inventory"] = inv
                 fresh["score"] = fresh.get("score", 0) + 10
+
+                exp_gain = exp_for_fish(fish)
+                fresh, leveled_up, _levels_gained = add_exp(fresh, exp_gain)
+                if leveled_up:
+                    # Thưởng hồi đầy thể lực khi lên cấp.
+                    fresh["energy"] = max_energy_for_level(fresh["level"])
+                    fresh["energy_updated_at"] = time.time()
+
+                result["exp_gained"] = exp_gain
+                result["leveled_up"] = leveled_up
+                result["new_level"] = fresh["level"]
+                result["energy"] = fresh["energy"]
+                result["max_energy"] = max_energy_for_level(fresh["level"])
             elif success is False:
                 fresh["score"] = max(0, fresh.get("score", 0) - 5)
-            # success is None (timeout) -> không cộng/trừ gì, cá tự bơi đi
+            # success is None (timeout) -> không cộng/trừ điểm/EXP, cá tự bơi đi
+
             await asave_user_data(interaction.user.id, fresh)
+            return result
 
         view = ReelView(
             interaction.user, rod, fish, luck_bonus, rank_label, rank_badge,
             bait_name, bait_time_left, on_finish,
+            is_boss=is_boss, energy=energy, max_energy=max_energy,
         )
         view.message = await interaction.followup.send(view=view, wait=True)
 
@@ -852,8 +1030,17 @@ class CauCaVanCan(commands.Cog):
     async def vi(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         data = await aget_user_data(interaction.user.id)
+        data = apply_energy_regen(data)
+        await asave_user_data(interaction.user.id, data)
+
         rank_label, rank_badge = rank_for_score(data["score"])
         rod = RODS.get(data["rod"], RODS[DEFAULT_ROD_KEY])
+
+        level = data.get("level", 1)
+        exp = data.get("exp", 0)
+        exp_needed = exp_needed_for_level(level)
+        energy = data.get("energy", 0)
+        max_energy = max_energy_for_level(level)
 
         view = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_colour=discord.Colour.blurple())
@@ -867,6 +1054,13 @@ class CauCaVanCan(commands.Cog):
             f"{E.DIAMOND} **Kim Cương:** `{fmt_vang(data['kim_cuong'])}`\n"
             f"{E.CASH} **Cash:** `{fmt_vang(data['cash'])}`\n"
             f"🎣 **Cần đang dùng:** {rod.emoji} `{rod.name}`"
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"📈 **Cấp:** `{level}` — EXP: `{exp}/{exp_needed}`\n"
+            f"`{make_bar(exp / exp_needed if exp_needed else 0)}`\n"
+            f"🔋 **Thể lực:** `{energy}/{max_energy}`\n"
+            f"`{make_bar(energy / max_energy if max_energy else 0)}`"
         ))
         view.add_item(container)
         await interaction.followup.send(view=view, ephemeral=True)
