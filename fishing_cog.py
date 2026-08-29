@@ -57,19 +57,20 @@ from __future__ import annotations
 
 import asyncio
 import random
+import string
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
 from firebase_db import (
-    OWNER_IDS, aget_current_weather, aget_user_data, aset_current_weather,
-    asave_user_data,
+    OWNER_IDS, acreate_code, aget_all_users, aget_code, aget_current_weather,
+    aget_user_data, aredeem_code, aset_current_weather, asave_user_data,
 )
 from fish_data import (
     ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, MAP_BY_KEY, MAPS,
@@ -326,6 +327,32 @@ def make_bar(ratio: float, size: int = 14, fill: str = "█", empty: str = "░"
 # ---------------------------------------------------------------------------
 # Khung kết quả (Components V2)
 # ---------------------------------------------------------------------------
+# Kiểu callback "Câu Tiếp" — nhận interaction của chính cú bấm nút, tự thả
+# 1 cần câu mới (xem CauCaVanCan._do_cau_ca) y hệt như gọi lại /câu_cá.
+ContinueCallback = Callable[[discord.Interaction], Awaitable[None]]
+
+
+def _add_continue_row(container: discord.ui.Container, on_continue: Optional[ContinueCallback]) -> None:
+    """Gắn thêm 1 nút "🎣 Câu Tiếp" vào cuối khung kết quả (thành công lẫn
+    đứt dây) nếu có `on_continue` — cho phép câu vòng tiếp theo ngay mà
+    không cần gõ lại lệnh /câu_cá."""
+    if on_continue is None:
+        return
+    container.add_item(discord.ui.Separator())
+    row = discord.ui.ActionRow()
+    btn = discord.ui.Button(
+        label="🎣 Câu Tiếp", style=discord.ButtonStyle.success,
+        custom_id=f"reel_continue_{uuid.uuid4().hex}",
+    )
+
+    async def _cb(interaction: discord.Interaction) -> None:
+        await on_continue(interaction)
+
+    btn.callback = _cb
+    row.add_item(btn)
+    container.add_item(row)
+
+
 def build_fail_view(
     member: discord.Member,
     rod: Rod,
@@ -333,6 +360,7 @@ def build_fail_view(
     rank_badge: str,
     reason: str = "Con cá đã giật đứt dây và bơi mất tiêu!",
     level_info: Optional[dict] = None,
+    on_continue: Optional[ContinueCallback] = None,
 ) -> tuple[discord.ui.LayoutView, discord.File]:
     file = discord.File(ROD_BREAK_IMAGE, filename="can_gay.png")
 
@@ -356,6 +384,7 @@ def build_fail_view(
         container.add_item(discord.ui.TextDisplay(
             f"🔋 **Thể lực:** `{level_info['energy']}/{level_info['max_energy']}`"
         ))
+    _add_continue_row(container, on_continue)
     view.add_item(container)
     return view, file
 
@@ -371,6 +400,7 @@ def build_success_view(
     bait_time_left: Optional[str] = None,
     is_boss: bool = False,
     level_info: Optional[dict] = None,
+    on_continue: Optional[ContinueCallback] = None,
 ) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(
@@ -407,6 +437,7 @@ def build_success_view(
     container.add_item(discord.ui.TextDisplay(
         f"# {E.FISH_NUMBER}\nDùng `/bán` để đổi cá trong kho ra Vàng."
     ))
+    _add_continue_row(container, on_continue)
     view.add_item(container)
     return view
 
@@ -460,6 +491,7 @@ class ReelView(discord.ui.LayoutView):
         max_energy: int = ENERGY_BASE,
         skills: Optional[list[Optional[Skill]]] = None,
         weather: Optional["Weather"] = None,
+        on_continue: Optional[ContinueCallback] = None,
     ):
         super().__init__(timeout=REEL_TIMEOUT_SECONDS)
         self.member = member
@@ -467,6 +499,10 @@ class ReelView(discord.ui.LayoutView):
         self.fish = fish
         self.luck_bonus = luck_bonus
         self.weather = weather
+        # Callback "Câu Tiếp" gắn vào khung kết quả cuối ván (xem
+        # build_success_view/build_fail_view) — cho phép thả cần mới ngay
+        # từ nút bấm, không cần gõ lại /câu_cá.
+        self.on_continue = on_continue
         # Hệ số nhân tốc độ tăng độ căng dây do thời tiết hiện tại (1.0 = bình
         # thường, <1 = dễ hơn, >1 = khó hơn). Xem weather_data.py.
         self.tension_mult = weather.tension_mult if weather else 1.0
@@ -568,7 +604,7 @@ class ReelView(discord.ui.LayoutView):
             view, file = build_fail_view(
                 self.member, self.rod, self.rank_label, self.rank_badge,
                 reason="Bạn đứng câu quá lâu không kéo, dây căng hết cỡ rồi đứt phựt!",
-                level_info=result,
+                level_info=result, on_continue=self.on_continue,
             )
             try:
                 await self.message.edit(view=view, attachments=[file])
@@ -806,13 +842,13 @@ class ReelView(discord.ui.LayoutView):
                     self.member, self.rod, self.rank_label, self.rank_badge, self.fish,
                     bait_name=self.bait_name, bait_luck=self.luck_bonus,
                     bait_time_left=self.bait_time_left, is_boss=self.is_boss,
-                    level_info=result,
+                    level_info=result, on_continue=self.on_continue,
                 )
                 await interaction.response.edit_message(view=view, attachments=[])
             else:
                 view, file = build_fail_view(
                     self.member, self.rod, self.rank_label, self.rank_badge,
-                    level_info=result,
+                    level_info=result, on_continue=self.on_continue,
                 )
                 await interaction.response.edit_message(view=view, attachments=[file])
         except discord.HTTPException:
@@ -829,6 +865,7 @@ class ReelView(discord.ui.LayoutView):
             container.add_item(discord.ui.TextDisplay(
                 f"💤 **{self.member.display_name}** đứng câu quá lâu, con cá đã tự bơi đi mất..."
             ))
+            _add_continue_row(container, self.on_continue)
             self.add_item(container)
             if self.message:
                 try:
@@ -1373,6 +1410,98 @@ class BaitShopView(discord.ui.LayoutView):
 
 
 # ---------------------------------------------------------------------------
+# Nút "🎁 Nhập Code" trong /đồ_câu_lão_bát — mở modal nhập text, đổi thưởng
+# qua firebase_db.aredeem_code (xem CODES_ROOT/reward ở đó). Admin tạo code
+# bằng lệnh /createcode (cuối file, trong CauCaVanCan).
+# ---------------------------------------------------------------------------
+class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
+    code_input: discord.ui.TextInput = discord.ui.TextInput(
+        label="Nhập code",
+        placeholder="VD: VANCAN2026",
+        min_length=1,
+        max_length=64,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        code = self.code_input.value.strip().upper()
+
+        outcome = await aredeem_code(code, interaction.user.id)
+        status = outcome["status"]
+        if status == "not_found":
+            await interaction.followup.send(
+                f"❌ Không tìm thấy code `{code}` (sai hoặc chưa từng tồn tại)!",
+                ephemeral=True,
+            )
+            return
+        if status == "already_used":
+            await interaction.followup.send(
+                f"⚠️ Bạn đã đổi code `{code}` rồi, mỗi người chỉ đổi được 1 lần!",
+                ephemeral=True,
+            )
+            return
+        if status == "exhausted":
+            await interaction.followup.send(
+                f"⚠️ Code `{code}` đã hết lượt đổi!", ephemeral=True,
+            )
+            return
+
+        reward: dict = outcome.get("reward") or {}
+        data = await aget_user_data(interaction.user.id)
+        lines: list[str] = []
+
+        vang = reward.get("vang")
+        if vang:
+            data["vang"] = data.get("vang", 0) + vang
+            lines.append(f"{E.GOLD} **+{fmt_vang(vang)}** Vàng")
+
+        rod_key = reward.get("rod")
+        if rod_key and rod_key in RODS:
+            unlocked_rods = set(data.get("unlocked_rods", []))
+            unlocked_rods.add(rod_key)
+            data["unlocked_rods"] = list(unlocked_rods)
+            rod = RODS[rod_key]
+            lines.append(f"🎣 Cần câu **{rod.emoji} {rod.name}**")
+
+        skill_key = reward.get("skill")
+        if skill_key and skill_key in SKILLS:
+            unlocked_skills = set(data.get("unlocked_skills", []))
+            unlocked_skills.add(skill_key)
+            data["unlocked_skills"] = list(unlocked_skills)
+            skill = SKILLS[skill_key]
+            lines.append(f"🧩 Kỹ năng **{skill.emoji} {skill.name}** (mở khóa — dùng `/đồ_câu_lão_bát` để trang bị)")
+
+        bait_key = reward.get("bait")
+        if bait_key and bait_key in BAITS:
+            bait = BAITS[bait_key]
+            data["bait"] = {
+                "name": bait.name,
+                "luck": bait.luck,
+                "expires_at": time.time() + bait.duration_s,
+            }
+            lines.append(f"{E.BAIT} Mồi **{bait.name}** (+{bait.luck:.0%} may mắn, dùng ngay)")
+
+        if not lines:
+            # Code hợp lệ nhưng reward rỗng (không nên xảy ra nếu tạo bằng
+            # /createcode — chỉ phòng hờ dữ liệu Firebase bị sửa tay).
+            await interaction.followup.send(
+                f"⚠️ Code `{code}` không có phần thưởng hợp lệ nào!", ephemeral=True,
+            )
+            return
+
+        await asave_user_data(interaction.user.id, data)
+
+        view = discord.ui.LayoutView(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Colour.green())
+        container.add_item(discord.ui.TextDisplay(
+            f"## 🎁 Đổi code `{code}` thành công!\n" + "\n".join(f"- {l}" for l in lines)
+        ))
+        view.add_item(container)
+        await interaction.followup.send(view=view, ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
 # Shop gộp — "/đồ_câu_Lão_Bát": 1 view duy nhất với tab lớn trên cùng
 # [Cần Câu] [Kỹ Năng] [Mồi Câu]. Mỗi tab NHÚNG lại nguyên logic phân trang/
 # mua/trang bị của shop con tương ứng (RodShopView/SkillShopView/
@@ -1388,6 +1517,7 @@ class UnifiedShopView(discord.ui.LayoutView):
         self.user_id = user_id
         self.tab = tab
         self._cid_tabs = {t: f"unishop_tab_{t}_{uuid.uuid4().hex}" for t in self.TABS}
+        self._cid_redeem = f"unishop_redeem_{uuid.uuid4().hex}"
 
         # Sub-shop con giữ NGUYÊN state riêng (index/tab con...) qua các lần
         # chuyển tab lớn trong CÙNG 1 phiên UnifiedShopView, để user không bị
@@ -1439,6 +1569,11 @@ class UnifiedShopView(discord.ui.LayoutView):
             )
             btn.callback = self._make_switch_tab_cb(t)
             tab_row.add_item(btn)
+        redeem_btn = discord.ui.Button(
+            label="🎁 Nhập Code", style=discord.ButtonStyle.success, custom_id=self._cid_redeem,
+        )
+        redeem_btn.callback = self._on_redeem_code
+        tab_row.add_item(redeem_btn)
         container.add_item(tab_row)
         container.add_item(discord.ui.Separator())
 
@@ -1469,6 +1604,13 @@ class UnifiedShopView(discord.ui.LayoutView):
             self._render(data)
             await interaction.edit_original_response(view=self)
         return _cb
+
+    async def _on_redeem_code(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        # send_modal() PHẢI là phản hồi ĐẦU TIÊN cho interaction này — không
+        # được defer()/gọi response nào khác trước đó.
+        await interaction.response.send_modal(RedeemCodeModal())
 
 
 # ---------------------------------------------------------------------------
@@ -1744,6 +1886,147 @@ class MapSelectView(discord.ui.LayoutView):
 
 
 # ---------------------------------------------------------------------------
+# Bảng xếp hạng — "/bảng_xếp_hạng": 1 view gộp 2 tab [Cân Nặng] [Vàng], style
+# tab y hệt UnifiedShopView. Top 10 mỗi bảng, đọc 1 LẦN toàn bộ fishing/users
+# (aget_all_users) rồi tự sắp xếp — không cần index/nhánh riêng trên Firebase
+# vì lượng user của 1 bot Discord quy mô này đọc trọn nhánh vẫn rẻ.
+# ---------------------------------------------------------------------------
+class LeaderboardView(discord.ui.LayoutView):
+    TABS = ("can_nang", "vang")
+    TAB_LABELS = {"can_nang": "⚖️ Cân Nặng Cá", "vang": f"{E.GOLD} Vàng"}
+    TOP_N = 10
+    _MEDALS = ("🥇", "🥈", "🥉")
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        rows_weight: list[tuple[int, float]],
+        rows_vang: list[tuple[int, float]],
+        names: dict[int, str],
+        tab: str = "can_nang",
+    ):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.rows_weight = rows_weight
+        self.rows_vang = rows_vang
+        self.names = names
+        self.tab = tab
+        self._cid_tabs = {t: f"lb_tab_{t}_{uuid.uuid4().hex}" for t in self.TABS}
+        self._render()
+
+    @classmethod
+    async def create(
+        cls, bot: commands.Bot, guild: Optional[discord.Guild], tab: str = "can_nang",
+    ) -> "LeaderboardView":
+        raw_users = await aget_all_users()
+
+        rows_weight: list[tuple[int, float]] = []
+        rows_vang: list[tuple[int, float]] = []
+        for uid_str, data in raw_users.items():
+            if not isinstance(data, dict):
+                continue
+            try:
+                uid = int(uid_str)
+            except (TypeError, ValueError):
+                continue
+            weight = data.get("total_weight_can") or 0
+            vang = data.get("vang") or 0
+            if weight > 0:
+                rows_weight.append((uid, float(weight)))
+            if vang and vang != float("inf"):
+                rows_vang.append((uid, float(vang)))
+
+        rows_weight.sort(key=lambda pair: pair[1], reverse=True)
+        rows_vang.sort(key=lambda pair: pair[1], reverse=True)
+        rows_weight = rows_weight[: cls.TOP_N]
+        rows_vang = rows_vang[: cls.TOP_N]
+
+        needed_ids = {uid for uid, _ in rows_weight} | {uid for uid, _ in rows_vang}
+        names: dict[int, str] = {}
+        for uid in needed_ids:
+            names[uid] = await cls._resolve_name(bot, guild, uid)
+
+        return cls(bot, rows_weight, rows_vang, names, tab)
+
+    @staticmethod
+    async def _resolve_name(bot: commands.Bot, guild: Optional[discord.Guild], user_id: int) -> str:
+        """Ưu tiên nickname trong server (display_name) — fallback về
+        username toàn cục nếu không còn ở server / bot chưa cache, và
+        cuối cùng là "Người chơi <id>" nếu không tra được (đã rời Discord)."""
+        if guild is not None:
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.HTTPException:
+                    member = None
+            if member is not None:
+                return member.display_name
+        user = bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await bot.fetch_user(user_id)
+            except discord.HTTPException:
+                user = None
+        return user.name if user is not None else f"Người chơi {user_id}"
+
+    def _rank_badge(self, index: int) -> str:
+        if index < len(self._MEDALS):
+            return self._MEDALS[index]
+        return f"`#{index + 1}`"
+
+    def _render(self) -> None:
+        self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Colour.gold())
+        container.add_item(discord.ui.TextDisplay("# 🏆 Bảng Xếp Hạng Câu Cá Vạn Cân"))
+
+        tab_row = discord.ui.ActionRow()
+        for t in self.TABS:
+            btn = discord.ui.Button(
+                label=self.TAB_LABELS[t],
+                style=discord.ButtonStyle.primary if self.tab == t else discord.ButtonStyle.secondary,
+                custom_id=self._cid_tabs[t],
+            )
+            btn.callback = self._make_switch_tab_cb(t)
+            tab_row.add_item(btn)
+        container.add_item(tab_row)
+        container.add_item(discord.ui.Separator())
+
+        rows = self.rows_weight if self.tab == "can_nang" else self.rows_vang
+        if not rows:
+            container.add_item(discord.ui.TextDisplay(
+                "_Chưa có ai lọt bảng xếp hạng này — đi câu vài con rồi quay lại xem!_"
+            ))
+        else:
+            lines = []
+            for i, (uid, value) in enumerate(rows):
+                name = self.names.get(uid, f"Người chơi {uid}")
+                if self.tab == "can_nang":
+                    value_str = f"`{fmt_vang(value)} cân`"
+                else:
+                    value_str = f"{E.GOLD} `{fmt_vang(value)}` Vàng"
+                lines.append(f"{self._rank_badge(i)} **{name}** — {value_str}")
+            container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+
+        if self.tab == "can_nang":
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(
+                "-# Tổng khối lượng cá đã câu được cả đời (cộng dồn, không "
+                "trừ khi bán cá). Cá chưa xác định khối lượng không được tính."
+            ))
+
+        self.add_item(container)
+
+    def _make_switch_tab_cb(self, tab: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            self.tab = tab
+            self._render()
+            await interaction.edit_original_response(view=self)
+        return _cb
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 class CauCaVanCan(commands.Cog):
@@ -1814,6 +2097,15 @@ class CauCaVanCan(commands.Cog):
 
     @app_commands.command(name="câu_cá", description="Thả cần câu cá!")
     async def cau_ca(self, interaction: discord.Interaction) -> None:
+        await self._do_cau_ca(interaction)
+
+    async def _do_cau_ca(self, interaction: discord.Interaction) -> None:
+        """Thân lệnh /câu_cá thật sự — tách riêng thành method để nút
+        "🎣 Câu Tiếp" (gắn ở cuối khung kết quả, xem build_success_view/
+        build_fail_view) có thể gọi lại y hệt, không cần user gõ lại lệnh.
+        Nút "Câu Tiếp" gửi tới đây 1 interaction (component) MỚI, hoạt động
+        y hệt 1 lượt /câu_cá bình thường — vẫn tôn trọng đầy đủ cooldown/
+        thể lực như thường lệ."""
         # defer() ngay lập tức trước khi đụng tới Firebase — tránh lỗi
         # "Ứng dụng không phản hồi" nếu việc đọc/ghi DB mất hơn 3 giây.
         await interaction.response.defer()
@@ -1896,6 +2188,8 @@ class CauCaVanCan(commands.Cog):
                 inv[fish.key] = inv.get(fish.key, 0) + 1
                 fresh["inventory"] = inv
                 fresh["score"] = fresh.get("score", 0) + 10
+                if fish.weight_can:
+                    fresh["total_weight_can"] = fresh.get("total_weight_can", 0.0) + fish.weight_can
 
                 exp_gain = exp_for_fish(fish)
                 fresh, leveled_up, _levels_gained = add_exp(fresh, exp_gain)
@@ -1916,11 +2210,14 @@ class CauCaVanCan(commands.Cog):
             await asave_user_data(interaction.user.id, fresh)
             return result
 
+        async def on_continue(continue_interaction: discord.Interaction) -> None:
+            await self._do_cau_ca(continue_interaction)
+
         view = ReelView(
             interaction.user, rod, fish, luck_bonus, rank_label, rank_badge,
             bait_name, bait_time_left, on_finish,
             is_boss=is_boss, energy=energy, max_energy=max_energy, skills=skills,
-            weather=weather,
+            weather=weather, on_continue=on_continue,
         )
         view.message = await interaction.followup.send(view=view, wait=True)
 
@@ -1928,6 +2225,15 @@ class CauCaVanCan(commands.Cog):
     async def chon_map(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         view = await MapSelectView.create(user_id=interaction.user.id)
+        await interaction.followup.send(view=view)
+
+    @app_commands.command(
+        name="bảng_xếp_hạng",
+        description="Bảng xếp hạng câu cá — cân nặng cá đã câu & Vàng đang có",
+    )
+    async def bang_xep_hang(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        view = await LeaderboardView.create(self.bot, interaction.guild)
         await interaction.followup.send(view=view)
 
     @app_commands.command(
@@ -1991,6 +2297,154 @@ class CauCaVanCan(commands.Cog):
         container.add_item(discord.ui.TextDisplay(f"🧩 **Kỹ năng đang trang bị:** {skill_lines}"))
         view.add_item(container)
         await interaction.followup.send(view=view, ephemeral=True)
+
+    # -- Admin: tạo code đổi thưởng (Vàng / cần câu / kỹ năng / mồi câu) --
+    def _is_admin(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id in OWNER_IDS:
+            return True
+        member = interaction.user
+        return isinstance(member, discord.Member) and member.guild_permissions.administrator
+
+    @app_commands.command(
+        name="createcode",
+        description="[Admin] Tạo code đổi thưởng (Vàng / cần câu / kỹ năng / mồi câu)",
+    )
+    @app_commands.describe(
+        code="Mã code (để trống sẽ tự sinh ngẫu nhiên 8 ký tự)",
+        vang="Số Vàng thưởng khi đổi code",
+        can_cau="Cần câu tặng kèm (mở khóa, chưa tự trang bị)",
+        ky_nang="Kỹ năng tặng kèm (mở khóa, chưa tự trang bị)",
+        moi_cau="Mồi câu tặng kèm (dùng ngay khi đổi code)",
+        so_lan_dung="Số lượt đổi tối đa cho cả server (để trống = không giới hạn)",
+    )
+    async def createcode(
+        self,
+        interaction: discord.Interaction,
+        code: Optional[str] = None,
+        vang: Optional[int] = None,
+        can_cau: Optional[str] = None,
+        ky_nang: Optional[str] = None,
+        moi_cau: Optional[str] = None,
+        so_lan_dung: Optional[int] = None,
+    ) -> None:
+        if not self._is_admin(interaction):
+            await interaction.response.send_message(
+                "⛔ Chỉ Admin mới dùng được lệnh này!", ephemeral=True,
+            )
+            return
+
+        if can_cau and can_cau not in RODS:
+            await interaction.response.send_message(
+                f"⚠️ Không tìm thấy cần câu với key `{can_cau}` (gõ tên để bot gợi ý)!",
+                ephemeral=True,
+            )
+            return
+        if ky_nang and ky_nang not in SKILLS:
+            await interaction.response.send_message(
+                f"⚠️ Không tìm thấy kỹ năng với key `{ky_nang}` (gõ tên để bot gợi ý)!",
+                ephemeral=True,
+            )
+            return
+        if moi_cau and moi_cau not in BAITS:
+            await interaction.response.send_message(
+                f"⚠️ Không tìm thấy mồi câu với key `{moi_cau}` (gõ tên để bot gợi ý)!",
+                ephemeral=True,
+            )
+            return
+        if so_lan_dung is not None and so_lan_dung <= 0:
+            await interaction.response.send_message(
+                "⚠️ Số lượt dùng phải lớn hơn 0 (để trống nếu muốn không giới hạn)!",
+                ephemeral=True,
+            )
+            return
+
+        reward: dict = {}
+        if vang:
+            reward["vang"] = vang
+        if can_cau:
+            reward["rod"] = can_cau
+        if ky_nang:
+            reward["skill"] = ky_nang
+        if moi_cau:
+            reward["bait"] = moi_cau
+
+        if not reward:
+            await interaction.response.send_message(
+                "⚠️ Phải cho ít nhất 1 phần thưởng: `vang`, `can_cau`, `ky_nang` hoặc `moi_cau`!",
+                ephemeral=True,
+            )
+            return
+
+        final_code = (code or "").strip().upper()
+        if not final_code:
+            final_code = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+        existing = await aget_code(final_code)
+        if existing:
+            await interaction.response.send_message(
+                f"⚠️ Code `{final_code}` đã tồn tại, chọn mã khác hoặc để trống để bot tự sinh!",
+                ephemeral=True,
+            )
+            return
+
+        await acreate_code(final_code, reward, so_lan_dung, interaction.user.id)
+
+        reward_lines = []
+        if "vang" in reward:
+            reward_lines.append(f"{E.GOLD} `{fmt_vang(reward['vang'])}` Vàng")
+        if "rod" in reward:
+            r = RODS[reward["rod"]]
+            reward_lines.append(f"🎣 {r.emoji} {r.name}")
+        if "skill" in reward:
+            s = SKILLS[reward["skill"]]
+            reward_lines.append(f"🧩 {s.emoji} {s.name}")
+        if "bait" in reward:
+            b = BAITS[reward["bait"]]
+            reward_lines.append(f"{E.BAIT} {b.name}")
+
+        view = discord.ui.LayoutView(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Colour.green())
+        container.add_item(discord.ui.TextDisplay(
+            f"## ✅ Đã tạo code `{final_code}`\n"
+            + "\n".join(f"- {l}" for l in reward_lines)
+            + f"\n\n**Số lượt đổi:** `{so_lan_dung if so_lan_dung else 'Không giới hạn'}`\n"
+            f"Người chơi bấm nút **🎁 Nhập Code** trong `/đồ_câu_lão_bát` để đổi."
+        ))
+        view.add_item(container)
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+    @createcode.autocomplete("can_cau")
+    async def _createcode_rod_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        current_l = current.lower()
+        options = [
+            r for r in (ROD_LIST + LIMITED_ROD_LIST)
+            if current_l in r.name.lower() or current_l in r.key.lower()
+        ]
+        return [app_commands.Choice(name=f"{r.emoji} {r.name}", value=r.key) for r in options[:25]]
+
+    @createcode.autocomplete("ky_nang")
+    async def _createcode_skill_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        current_l = current.lower()
+        options = [
+            s for s in SKILL_SHOP
+            if current_l in s.name.lower() or current_l in s.key.lower()
+        ]
+        return [app_commands.Choice(name=f"{s.emoji} {s.name}", value=s.key) for s in options[:25]]
+
+    @createcode.autocomplete("moi_cau")
+    async def _createcode_bait_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        current_l = current.lower()
+        options = [
+            b for b in BAIT_SHOP
+            if current_l in b.name.lower() or current_l in b.key.lower()
+        ]
+        return [app_commands.Choice(name=b.name, value=b.key) for b in options[:25]]
 
 
 async def setup(bot: commands.Bot) -> None:

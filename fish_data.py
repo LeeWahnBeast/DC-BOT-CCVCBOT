@@ -31,6 +31,42 @@ def _slugify(text: str) -> str:
     return text or "ca"
 
 
+def parse_weight_to_can(weight_label: str) -> float | None:
+    """Quy đổi weight_label hiển thị (vd "500.000 cân", "1 vạn cân",
+    "1,2 triệu cân") về 1 số thực đơn vị "cân" duy nhất, dùng để CỘNG DỒN
+    tổng khối lượng cá đã câu của người chơi (bảng xếp hạng cân nặng).
+    Trả về None nếu weight_label không xác định (vd "—") — cá đó không
+    cộng vào tổng cân nặng (KHÔNG tự bịa số để tránh sai lệch xếp hạng).
+    """
+    s = weight_label.strip().lower()
+    if not s or s in ("—", "-"):
+        return None
+    s = s.replace("cân", "").strip()
+
+    multiplier = 1.0
+    if "triệu" in s:
+        multiplier = 1_000_000.0
+        s = s.replace("triệu", "").strip()
+    elif "vạn" in s:
+        multiplier = 10_000.0
+        s = s.replace("vạn", "").strip()
+
+    if not s:
+        return None
+    # Quy ước Việt Nam: dấu phẩy = thập phân (vd "1,2"), dấu chấm = phân
+    # cách hàng nghìn (vd "1.500.000") -> chuẩn hóa về float Python.
+    if "," in s and "." not in s:
+        s = s.replace(",", ".")
+    else:
+        s = s.replace(".", "")
+
+    try:
+        value = float(s)
+    except ValueError:
+        return None
+    return value * multiplier
+
+
 @dataclass(frozen=True)
 class FishSpecies:
     key: str
@@ -39,6 +75,7 @@ class FishSpecies:
     price: int            # đơn giá bán, Vàng / con
     tier_key: str
     map_key: str | None = None   # khu vực câu, độc lập với tier giá
+    weight_can: float | None = None  # weight_label quy đổi ra số "cân" (xem parse_weight_to_can)
 
 
 @dataclass(frozen=True)
@@ -300,7 +337,8 @@ def _build_fish() -> tuple[
             key = _make_unique_key(f"{tier_key}_{_slugify(row.name)}", used_keys)
             priced = max(1, round(row.price * PRICE_MULTIPLIER))
             fish = FishSpecies(key=key, name=row.name, weight_label=row.weight_label,
-                                price=priced, tier_key=tier_key, map_key=row.map_key)
+                                price=priced, tier_key=tier_key, map_key=row.map_key,
+                                weight_can=parse_weight_to_can(row.weight_label))
             all_fish.append(fish)
             by_tier[tier_key].append(fish)
             if row.map_key is not None:

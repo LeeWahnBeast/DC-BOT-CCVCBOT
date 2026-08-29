@@ -30,6 +30,13 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
           current_map: str | None      # key khu vực câu đang chọn (fish_data.MAPS) — None = câu tất cả khu vực
           unlocked_skills: [str]        # danh sách key skill câu cá đã mở khóa (skill_data.SKILL_SHOP)
           equipped_skills: [str|None]     # 3 ô trang bị skill, mỗi ô None hoặc key skill (skill_data.SKILL_SLOTS)
+      codes/
+        <code>/
+          reward: {vang?, rod?, skill?, bait?}   # xem create_code/redeem_code bên dưới
+          max_uses: int | None
+          used_by: [str]
+          created_by: int
+          created_at: float
 
 Đổi DB_ROOT nếu bot đã có sẵn nhánh khác.
 """
@@ -39,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from typing import Optional
 
 import firebase_admin
@@ -96,6 +104,10 @@ def _default_data() -> dict:
         "current_map": None,
         "unlocked_skills": [],
         "equipped_skills": [None, None, None],
+        # Tổng khối lượng (đơn vị "cân") cá đã câu được CỘNG DỒN cả đời —
+        # dùng riêng cho bảng xếp hạng cân nặng (/bảng_xếp_hạng), KHÔNG
+        # phải khối lượng đang tồn trong kho (không trừ khi bán cá).
+        "total_weight_can": 0.0,
     }
 
 
@@ -152,6 +164,20 @@ async def asave_user_data(user_id: int, data: dict) -> None:
     await asyncio.to_thread(save_user_data, user_id, data)
 
 
+def get_all_users() -> dict:
+    """Đọc TOÀN BỘ nhánh fishing/users 1 lần — dùng cho bảng xếp hạng
+    (/bảng_xếp_hạng). Trả về {user_id_str: user_data_dict}. KHÔNG áp dụng
+    Vàng vô hạn cho OWNER_IDS ở đây (khác get_user_data) vì owner chưa
+    từng bị ghi float('inf') xuống DB thật — giá trị đọc ra luôn là số
+    Vàng thật đang lưu, hợp lệ để xếp hạng."""
+    raw = db.reference(DB_ROOT).get()
+    return raw or {}
+
+
+async def aget_all_users() -> dict:
+    return await asyncio.to_thread(get_all_users)
+
+
 # ---------------------------------------------------------------------------
 # Thời tiết toàn server (1 giá trị dùng chung cho mọi user, KHÔNG theo
 # user_id) — xem weather_data.py cho danh sách loại thời tiết + hiệu ứng.
@@ -176,3 +202,75 @@ async def aget_current_weather() -> Optional[dict]:
 
 async def aset_current_weather(weather: dict) -> None:
     await asyncio.to_thread(set_current_weather, weather)
+
+
+# ---------------------------------------------------------------------------
+# Code đổi thưởng (Admin tạo bằng /createcode, người chơi đổi bằng nút
+# "🎁 Nhập Code" trong /đồ_câu_lão_bát — xem RedeemCodeModal trong
+# fishing_cog.py). Lưu ở nhánh riêng "fishing/codes/<code>", KHÔNG theo
+# user_id vì 1 code có thể dùng chung cho nhiều người (tùy max_uses).
+#
+#   fishing/codes/<CODE>/
+#     reward: {vang?, rod?, skill?, bait?}   # key nào có thì cấp thưởng đó
+#     max_uses: int | None                    # None = không giới hạn lượt
+#     used_by: [user_id_str]                   # đã đổi rồi thì không đổi lại được
+#     created_by: int
+#     created_at: float
+# ---------------------------------------------------------------------------
+CODES_ROOT = "fishing/codes"
+
+
+def get_code(code: str) -> Optional[dict]:
+    return db.reference(f"{CODES_ROOT}/{code}").get()
+
+
+def create_code(code: str, reward: dict, max_uses: Optional[int], created_by: int) -> None:
+    db.reference(f"{CODES_ROOT}/{code}").set({
+        "reward": reward,
+        "max_uses": max_uses,
+        "used_by": [],
+        "created_by": created_by,
+        "created_at": time.time(),
+    })
+
+
+def redeem_code(code: str, user_id: int) -> dict:
+    """Thử đổi 1 code cho user_id, DÙNG TRANSACTION để an toàn khi nhiều
+    người đổi cùng lúc (tránh vượt quá max_uses / đổi trùng).
+    Trả về {"status": "ok"|"not_found"|"already_used"|"exhausted", "reward": dict|None}."""
+    ref = db.reference(f"{CODES_ROOT}/{code}")
+    outcome = {"status": "not_found", "reward": None}
+
+    def _txn(current):
+        if current is None:
+            outcome["status"] = "not_found"
+            return current
+        used_by = list(current.get("used_by") or [])
+        uid = str(user_id)
+        if uid in used_by:
+            outcome["status"] = "already_used"
+            return current
+        max_uses = current.get("max_uses")
+        if max_uses is not None and len(used_by) >= max_uses:
+            outcome["status"] = "exhausted"
+            return current
+        used_by.append(uid)
+        current["used_by"] = used_by
+        outcome["status"] = "ok"
+        outcome["reward"] = current.get("reward") or {}
+        return current
+
+    ref.transaction(_txn)
+    return outcome
+
+
+async def aget_code(code: str) -> Optional[dict]:
+    return await asyncio.to_thread(get_code, code)
+
+
+async def acreate_code(code: str, reward: dict, max_uses: Optional[int], created_by: int) -> None:
+    await asyncio.to_thread(create_code, code, reward, max_uses, created_by)
+
+
+async def aredeem_code(code: str, user_id: int) -> dict:
+    return await asyncio.to_thread(redeem_code, code, user_id)
