@@ -60,14 +60,35 @@ class FishTier:
 # Khu vực câu cá — thứ tự map 1..4 khớp "Map 1..4" khoanh trong ảnh.
 # Map 5-7 chưa có ảnh cá thật (đang khóa/chưa mở trong game).
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Khu vực câu cá — thứ tự map 1..4 khớp "Map 1..4" khoanh trong ảnh.
+# Map 5-7 chưa có ảnh cá thật (đang khóa/chưa mở trong game).
+# unlock_level: cấp độ NGƯỜI CHƠI (data["level"], không phải rank theo
+# điểm) cần đạt để chọn được khu vực này trong /chọn_map — xem
+# MapSelectView trong fishing_cog.py. "Hồ thủy điện" (đập thủy điện) mở
+# ngay từ Lv.1 theo yêu cầu; map 8-10 là map MỚI thêm, chưa có ảnh cá thật
+# (cùng tình trạng "map_key=None -> chưa gán cá" như map 5-7 cho tới khi
+# có dữ liệu cá thật), mở ở cấp cao hơn hẳn để phù hợp tiến trình dài hạn.
+# ---------------------------------------------------------------------------
 MAPS: list[FishingMap] = [
-    FishingMap("ho_chua_bo_hoang", "Hồ chứa nước bỏ hoang", "🏞️"),
-    FishingMap("ho_thuy_dien_hat_nhan", "Hồ thủy điện gần nhà máy điện hạt nhân", "🌊"),
-    FishingMap("ho_cao_nguyen", "Hồ cao nguyên trên 5.000 m", "🏔️"),
-    FishingMap("dap_pat_di_hu", "Đập Pat Di Hu", "🏗️"),
-    FishingMap("khu_nuoc_thai_hat_nhan", "Khu vực nước thải hạt nhân", "☢️"),
+    FishingMap("ho_chua_bo_hoang", "Hồ chứa nước bỏ hoang", "🏞️", unlock_level=1),
+    FishingMap("ho_thuy_dien_hat_nhan", "Hồ thủy điện gần nhà máy điện hạt nhân", "🌊", unlock_level=1),
+    FishingMap("ho_cao_nguyen", "Hồ cao nguyên trên 5.000 m", "🏔️", unlock_level=10),
+    FishingMap("dap_pat_di_hu", "Đập Pat Di Hu", "🏗️", unlock_level=15),
+    FishingMap("khu_nuoc_thai_hat_nhan", "Khu vực nước thải hạt nhân", "☢️", unlock_level=25),
     FishingMap("black_pit", "Black Pit (Hố Đen)", "🕳️", unlock_level=45),
     FishingMap("ji_bing_he", "Jí Bĩng Hé", "❄️", unlock_level=80),
+    # -- Map mới thêm — chưa có ảnh khoanh cá thật, điền _RAW_FISH map_key
+    # tương ứng khi có dữ liệu chính xác từ game gốc.
+    FishingMap("dam_lay_bi_an", "Đầm Lầy Bí Ẩn", "🌫️", unlock_level=55),
+    FishingMap("vuc_sau_bang_gia", "Vực Sâu Băng Giá", "🧊", unlock_level=100),
+    FishingMap("thien_mon_hai_vuc", "Thiên Môn Hải Vực", "🌌", unlock_level=150),
+    # -- Map tự thêm (KHÔNG lấy từ ảnh/game gốc — không tìm được nguồn để
+    # đối chiếu). Nối tiếp tiến trình sau map lv150, cùng tình trạng
+    # map_key=None (chưa gán cá thật) như nhóm map 8-10 phía trên.
+    FishingMap("nghia_dia_tau_dam", "Nghĩa Địa Tàu Đắm", "⚓", unlock_level=180),
+    FishingMap("mieng_nui_lua_ngam", "Miệng Núi Lửa Ngầm", "🌋", unlock_level=230),
+    FishingMap("vuc_sau_khong_day", "Vực Sâu Không Đáy", "🌀", unlock_level=300),
 ]
 MAP_BY_KEY: dict[str, FishingMap] = {m.key: m for m in MAPS}
 
@@ -247,6 +268,10 @@ _RAW_FISH: dict[str, list[_F]] = {
 }
 
 
+# Hệ số tăng giá bán cá toàn cục — tăng 10% so với giá gốc trong _RAW_FISH.
+PRICE_MULTIPLIER = 1.10
+
+
 def _make_unique_key(base_key: str, used_keys: set[str]) -> str:
     key, n = base_key, 2
     while key in used_keys:
@@ -273,8 +298,9 @@ def _build_fish() -> tuple[
         best_in_tier: FishSpecies | None = None
         for row in rows:
             key = _make_unique_key(f"{tier_key}_{_slugify(row.name)}", used_keys)
+            priced = max(1, round(row.price * PRICE_MULTIPLIER))
             fish = FishSpecies(key=key, name=row.name, weight_label=row.weight_label,
-                                price=row.price, tier_key=tier_key, map_key=row.map_key)
+                                price=priced, tier_key=tier_key, map_key=row.map_key)
             all_fish.append(fish)
             by_tier[tier_key].append(fish)
             if row.map_key is not None:

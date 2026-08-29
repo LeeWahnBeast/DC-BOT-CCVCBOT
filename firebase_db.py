@@ -150,3 +150,29 @@ async def aget_user_data(user_id: int) -> dict:
 
 async def asave_user_data(user_id: int, data: dict) -> None:
     await asyncio.to_thread(save_user_data, user_id, data)
+
+
+# ---------------------------------------------------------------------------
+# Thời tiết toàn server (1 giá trị dùng chung cho mọi user, KHÔNG theo
+# user_id) — xem weather_data.py cho danh sách loại thời tiết + hiệu ứng.
+# Lưu ở nhánh riêng "fishing/weather/current" (tách khỏi DB_ROOT của user).
+# ---------------------------------------------------------------------------
+WEATHER_ROOT = "fishing/weather/current"
+
+
+def get_current_weather() -> Optional[dict]:
+    """Trả về dict {key, name, emoji, started_at, expires_at} hoặc None nếu
+    chưa từng random lần nào (vd bot mới deploy lần đầu)."""
+    return db.reference(WEATHER_ROOT).get()
+
+
+def set_current_weather(weather: dict) -> None:
+    db.reference(WEATHER_ROOT).set(weather)
+
+
+async def aget_current_weather() -> Optional[dict]:
+    return await asyncio.to_thread(get_current_weather)
+
+
+async def aset_current_weather(weather: dict) -> None:
+    await asyncio.to_thread(set_current_weather, weather)

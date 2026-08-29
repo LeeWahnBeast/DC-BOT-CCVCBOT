@@ -41,6 +41,16 @@ CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
   khóa qua /shop_kỹ_năng. Mỗi skill trang bị chỉ dùng được 1 lần/ván câu,
   tốn thể lực, hiệu ứng là trừ ngay % độ căng dây hoặc làm chậm tốc độ
   tăng độ căng dây trong vài giây — không có skill gây thêm sát thương.
+
+THỜI TIẾT (weather_data.py)
+---------------------------
+Bot tự random 1 thời tiết mới MỖI GIỜ (weather_loop trong CauCaVanCan),
+lưu vào Firebase (fishing/weather/current) và thông báo trong đúng kênh
+WEATHER_CHANNEL_ID. Lệnh /thời_tiết chỉ dùng được trong kênh đó. Thời tiết
+hiện tại được áp dụng (snapshot) vào mỗi ván /câu_cá lúc thả cần: cộng
+thêm luck_bonus, nhân thêm tốc độ tăng độ căng dây, và tăng/giảm tỷ lệ
+gặp cá boss/hiếm. 5 loại: Mưa, Giông, Đêm, Hạn Hán, Bảy Sắc Cầu Vồng
+(cực hiếm, buff mạnh nhất).
 """
 
 from __future__ import annotations
@@ -57,17 +67,25 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from firebase_db import OWNER_IDS, aget_user_data, asave_user_data
+from firebase_db import (
+    OWNER_IDS, aget_current_weather, aget_user_data, aset_current_weather,
+    asave_user_data,
+)
 from fish_data import (
     ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, MAP_BY_KEY, MAPS,
     TIERS, FishSpecies, fish_in_map, tiers_unlocked_for_pull,
 )
 from rod_data import DEFAULT_ROD_KEY, LIMITED_ROD_LIST, RODS, ROD_LIST, Rod
 from skill_data import SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects
+from weather_data import WEATHER_BY_KEY, WEATHERS, Weather, roll_weather
 
 ASSET_DIR = Path(__file__).parent / "assets"
 ROD_BREAK_IMAGE = ASSET_DIR / "can_gay.png"
 SHOP_BANNER_IMAGE = ASSET_DIR / "do_cau_lao_bat.webp"
+
+# Kênh DUY NHẤT được phép dùng lệnh thời tiết + nơi bot tự động gửi thông
+# báo thời tiết mới mỗi giờ.
+WEATHER_CHANNEL_ID = 1543098261705855096
 
 
 # ---------------------------------------------------------------------------
@@ -76,17 +94,33 @@ SHOP_BANNER_IMAGE = ASSET_DIR / "do_cau_lao_bat.webp"
 class E:
     TOP1 = "🥇"
     TOP3 = "🏆"
-    RANK_TRUYEN_THUYET = "🐉"
-    RANK_BAN_THANH = "⭐"
     GOLD = "<:xu:1543162904424218644>"
     BAIT = "🪱"
     FISH_NUMBER = "🐟"
 
 
+# ---------------------------------------------------------------------------
+# Cấp bậc (rank) theo Điểm (score) — 12 bậc, thứ tự THẤP -> CAO đúng theo
+# yêu cầu: Gà Mờ, Tân Thủ, Cao Thủ, Bậc Thầy, Tông Sư, Bán Tiên, Tiên Nhân,
+# Bán Thánh, Thánh Nhân, Bán Thần, Thần Tiên, Huyền Thoại.
+# GHI CHÚ: ngưỡng điểm (min_score) chưa có số liệu gốc cụ thể từ game —
+# tự đặt tăng dần hợp lý (mỗi cá câu được +10 điểm, thua đứt dây -5 điểm)
+# để 12 bậc dàn trải đều theo quá trình chơi dài hạn; chỉnh lại nếu có số
+# liệu chính xác từ game gốc.
+# ---------------------------------------------------------------------------
 RANK_TIERS = [
-    (0, "Tân Thủ Câu Cá", ""),
-    (1_000, "Bán Thánh Câu Cá", E.RANK_BAN_THANH),
-    (5_000, "Truyền Thuyết Câu Cá", E.RANK_TRUYEN_THUYET),
+    (0, "Gà Mờ Câu Cá", "🐣"),
+    (300, "Tân Thủ Câu Cá", "🎣"),
+    (800, "Cao Thủ Câu Cá", "🥈"),
+    (1_800, "Bậc Thầy Câu Cá", "🥇"),
+    (3_500, "Tông Sư Câu Cá", "🏵️"),
+    (6_500, "Bán Tiên Câu Cá", "🌗"),
+    (11_000, "Tiên Nhân Câu Cá", "🧙"),
+    (18_000, "Bán Thánh Câu Cá", "⭐"),
+    (28_000, "Thánh Nhân Câu Cá", "🌟"),
+    (42_000, "Bán Thần Câu Cá", "🔥"),
+    (62_000, "Thần Tiên Câu Cá", "👑"),
+    (90_000, "Huyền Thoại Câu Cá", "🐉"),
 ]
 
 
@@ -141,10 +175,10 @@ BAITS: dict[str, Bait] = {b.key: b for b in BAIT_SHOP}
 # ---------------------------------------------------------------------------
 # Cơ chế câu cá
 # ---------------------------------------------------------------------------
-CAST_COOLDOWN_SECONDS = 12       # thời gian hồi giữa 2 lần /câu_cá
-CLICK_COOLDOWN_SECONDS = 0.6      # chống spam nút "Kéo!"
+CAST_COOLDOWN_SECONDS = 6        # thời gian hồi giữa 2 lần /câu_cá (buff: giảm từ 12s)
+CLICK_COOLDOWN_SECONDS = 0.4      # chống spam nút "Kéo!" (buff: giảm từ 0.6s)
 REEL_TIMEOUT_SECONDS = 45.0        # không thao tác quá lâu -> hết hạn cứng, dừng ván
-IDLE_TENSION_PER_SECOND = 3.0      # % độ căng dây tăng thêm mỗi giây KHÔNG bấm "Kéo!"
+IDLE_TENSION_PER_SECOND = 2.0      # % độ căng dây tăng thêm mỗi giây KHÔNG bấm "Kéo!" (buff: giảm từ 3.0)
 IDLE_TICK_SECONDS = 1.0            # tần suất kiểm tra/tăng tension khi đứng yên
 
 # ---------------------------------------------------------------------------
@@ -222,7 +256,9 @@ def apply_energy_regen(data: dict) -> dict:
     return data
 
 
-def roll_fish(rod: Rod, map_key: Optional[str] = None) -> FishSpecies:
+def roll_fish(
+    rod: Rod, map_key: Optional[str] = None, boss_weight_mult: float = 1.0,
+) -> FishSpecies:
     """Chọn 1 con cá theo cấp mà lực kéo của cần hiện có thể tiếp cận.
     Cấp cao hơn có trọng số random thấp hơn (khó gặp hơn); trong 1 cấp,
     cá giá cao hơn cũng hiếm hơn.
@@ -230,6 +266,10 @@ def roll_fish(rod: Rod, map_key: Optional[str] = None) -> FishSpecies:
     Nếu `map_key` được chỉ định: chỉ roll trong số cá thuộc khu vực đó.
     Nếu khu vực đó chưa có cá nào tương thích với lực kéo hiện tại, tự
     động rơi về roll không giới hạn khu vực để không bao giờ "câu hụt".
+
+    `boss_weight_mult` (thời tiết, xem weather_data.py): nhân thêm vào
+    trọng số random của cá "boss" (cá đắt nhất mỗi cấp) — >1 nghĩa là thời
+    tiết hiện tại đang làm cá boss/hiếm dễ gặp hơn bình thường.
     """
     tiers = tiers_unlocked_for_pull(rod.pull)
     if not tiers:
@@ -243,14 +283,17 @@ def roll_fish(rod: Rod, map_key: Optional[str] = None) -> FishSpecies:
     if map_key is not None:
         tiers = [t for t in tiers if pool_for(t.key)]
         if not tiers:  # khu vực chưa có dữ liệu cá cho lực kéo này -> bỏ lọc map
-            return roll_fish(rod, map_key=None)
+            return roll_fish(rod, map_key=None, boss_weight_mult=boss_weight_mult)
 
     tier_weights = [1.0 / (i + 1) for i in range(len(tiers))]
     tier = random.choices(tiers, weights=tier_weights)[0]
 
     pool = pool_for(tier.key)
     max_price = max(f.price for f in pool)
-    fish_weights = [ (max_price / f.price) ** 0.5 for f in pool ]
+    fish_weights = [
+        (max_price / f.price) ** 0.5 * (boss_weight_mult if f.key in BOSS_FISH_KEYS else 1.0)
+        for f in pool
+    ]
     return random.choices(pool, weights=fish_weights)[0]
 
 
@@ -368,6 +411,35 @@ def build_success_view(
     return view
 
 
+def build_weather_view(weather: Weather, expires_at: Optional[float] = None) -> discord.ui.LayoutView:
+    """Khung Components V2 thông báo/hiển thị thời tiết hiện tại — dùng
+    chung bởi vòng lặp tự động mỗi giờ (weather_loop) và lệnh /thời_tiết."""
+    view = discord.ui.LayoutView(timeout=None)
+    container = discord.ui.Container(accent_colour=discord.Colour.blue())
+    container.add_item(discord.ui.TextDisplay(f"# {weather.emoji} Thời Tiết: {weather.name}"))
+    container.add_item(discord.ui.Separator())
+
+    effect_lines = [weather.description, ""]
+    if weather.luck_delta:
+        sign = "+" if weather.luck_delta > 0 else ""
+        effect_lines.append(f"🍀 Vận may câu cá: `{sign}{weather.luck_delta:.0%}`")
+    if weather.tension_mult != 1.0:
+        pct = (weather.tension_mult - 1.0)
+        sign = "+" if pct > 0 else ""
+        effect_lines.append(f"🎣 Tốc độ căng dây câu: `{sign}{pct:.0%}`")
+    if weather.boss_weight_mult != 1.0:
+        effect_lines.append(f"👑 Tỷ lệ gặp cá quý hiếm/boss: `x{weather.boss_weight_mult:.1f}`")
+    container.add_item(discord.ui.TextDisplay("\n".join(effect_lines)))
+
+    if expires_at:
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"⏳ Còn hiệu lực: `{format_time_left(expires_at - time.time())}`"
+        ))
+    view.add_item(container)
+    return view
+
+
 # ---------------------------------------------------------------------------
 # Minigame "Kéo!" — sửa (edit) lại đúng 1 tin nhắn, có cooldown chống spam.
 # ---------------------------------------------------------------------------
@@ -387,12 +459,17 @@ class ReelView(discord.ui.LayoutView):
         energy: int = 0,
         max_energy: int = ENERGY_BASE,
         skills: Optional[list[Optional[Skill]]] = None,
+        weather: Optional["Weather"] = None,
     ):
         super().__init__(timeout=REEL_TIMEOUT_SECONDS)
         self.member = member
         self.rod = rod
         self.fish = fish
         self.luck_bonus = luck_bonus
+        self.weather = weather
+        # Hệ số nhân tốc độ tăng độ căng dây do thời tiết hiện tại (1.0 = bình
+        # thường, <1 = dễ hơn, >1 = khó hơn). Xem weather_data.py.
+        self.tension_mult = weather.tension_mult if weather else 1.0
         self.rank_label = rank_label
         self.rank_badge = rank_badge
         self.bait_name = bait_name
@@ -461,7 +538,7 @@ class ReelView(discord.ui.LayoutView):
         if idle_for <= 0:
             return
         slow_mult = self.tension_slow_factor if now < self.tension_slow_until else 1.0
-        self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult
+        self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult * self.tension_mult
         self.last_action_at = now
 
     @tasks.loop(seconds=IDLE_TICK_SECONDS)
@@ -511,6 +588,8 @@ class ReelView(discord.ui.LayoutView):
             header = f"👑🐉 **BOSS XUẤT HIỆN: {self.fish.name}!** 👑🐉\n" + header
         if self.bait_name:
             header += f"\n✨ Mồi: {E.BAIT} **{self.bait_name}** - Còn `{self.bait_time_left}`"
+        if self.weather:
+            header += f"\n{self.weather.emoji} Thời tiết: **{self.weather.name}**"
         container.add_item(discord.ui.TextDisplay(header))
         container.add_item(discord.ui.Separator())
 
@@ -603,11 +682,19 @@ class ReelView(discord.ui.LayoutView):
             # luôn khớp đúng thời điểm hiện tại, không bị "trễ nhịp".
             self._apply_idle_tension(now)
 
-            dmg = self.rod.pull * random.uniform(0.9, 1.3) * (1 + self.luck_bonus * 0.5)
+            # BUFF "op": sát thương/lần kéo cao hơn (1.3-1.8x thay vì 0.9-1.3x)
+            # và luck ăn mạnh hơn (x0.8 thay vì x0.5).
+            dmg = self.rod.pull * random.uniform(1.3, 1.8) * (1 + self.luck_bonus * 0.8)
             self.progress += dmg
 
             slow_mult = self.tension_slow_factor if now < self.tension_slow_until else 1.0
-            base_tension_gain = max(1.0, 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4))
+            # BUFF "op": độ căng dây tăng chậm hơn hẳn (chia cho khoảng random
+            # lớn hơn) và luck giảm căng dây mạnh hơn (x0.6 thay vì x0.4),
+            # đồng thời nhân thêm hệ số thời tiết (self.tension_mult).
+            base_tension_gain = max(
+                0.6,
+                100.0 / random.uniform(9.0, 14.0) * (1 - self.luck_bonus * 0.6),
+            ) * self.tension_mult
             self.tension += base_tension_gain * slow_mult
 
             self.energy -= 1
@@ -677,11 +764,20 @@ class ReelView(discord.ui.LayoutView):
             elif skill.effect == "slow_tension":
                 self.tension_slow_until = now + skill.duration_s
                 self.tension_slow_factor = 1.0 - skill.value
+            elif skill.effect == "instant_finish":
+                # "Khai Thiên Môn Đập Cá" — bắt cá NGAY LẬP TỨC, bỏ qua
+                # tension hiện tại (dây không thể đứt sau đòn kết liễu này).
+                self.progress = self.target
 
             # Idle tick không còn tự kiểm tra mỗi giây -> phải tự check ở
             # đây: nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC
             # skill kịp giảm nó xuống (đứng lâu rồi mới bấm skill), ván câu
             # coi như đứt dây, dùng skill không kịp "cứu" nữa.
+            if self.progress >= self.target:
+                self.finished = True
+                self._idle_tick.stop()
+                await self._finish(interaction, success=True)
+                return
             if self.tension >= self.tension_max:
                 self.finished = True
                 self._idle_tick.stop()
@@ -889,7 +985,19 @@ class RodShopView(discord.ui.LayoutView):
             action_row.add_item(locked_btn)
         container.add_item(action_row)
 
-        self.add_item(container)
+        # LƯU Ý: KHÔNG self.add_item(container) ở đây — hàm này được cả
+        # _render() (trường hợp đứng độc lập) VÀ UnifiedShopView (trường hợp
+        # nhúng, truyền vào container CỦA UNIFIED chứ không phải của
+        # RodShopView) cùng gọi. Trước đây có 1 dòng self.add_item(container)
+        # thừa ở đây khiến: (1) đứng độc lập thì container bị add 2 LẦN vào
+        # cùng 1 view (add lại ở _render), và (2) khi bị UnifiedShopView
+        # nhúng vào, mỗi lần đổi tab/trang/mua đồ lại vô tình nhét thêm 1
+        # bản container VÀO CHÍNH self.rod_shop (không phải view đang hiển
+        # thị) — rò rỉ item tích lũy dần qua mỗi lần bấm nút, tới khi vượt
+        # giới hạn số children của 1 View thì toàn bộ shop bấm gì cũng lỗi
+        # ("Tương tác này thất bại" / không phản hồi). Chỉ nơi thực sự sở
+        # hữu view đang hiển thị (RodShopView._render() hoặc
+        # UnifiedShopView._render()) mới được add_item(container).
 
     # `_on_change` (mặc định None): khi RodShopView được UnifiedShopView
     # nhúng vào làm shop con, Unified sẽ gán hàm này để tự vẽ lại TOÀN BỘ
@@ -1024,8 +1132,10 @@ class SkillShopView(discord.ui.LayoutView):
 
         if skill.effect == "reduce_tension":
             effect_line = f"Trừ ngay `{skill.value:.0%}` độ căng dây khi dùng."
-        else:
+        elif skill.effect == "slow_tension":
             effect_line = f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`."
+        else:  # instant_finish
+            effect_line = "BẮT CÁ NGAY LẬP TỨC, bỏ qua toàn bộ máu cá còn lại."
 
         stats = (
             f"{skill.description}\n"
@@ -1639,6 +1749,68 @@ class MapSelectView(discord.ui.LayoutView):
 class CauCaVanCan(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.weather_loop.start()
+
+    def cog_unload(self) -> None:
+        self.weather_loop.cancel()
+
+    # -- Thời tiết: tự random 1 lần MỖI GIỜ, lưu Firebase + thông báo trong
+    # đúng kênh WEATHER_CHANNEL_ID. tasks.loop chạy ngay lần đầu khi start()
+    # (sau khi bot sẵn sàng nhờ before_loop) rồi lặp lại mỗi 3600s sau đó,
+    # nên tự đáp ứng đúng yêu cầu "mỗi 1 tiếng có 1 weather random".
+    @tasks.loop(hours=1)
+    async def weather_loop(self) -> None:
+        weather = roll_weather()
+        now = time.time()
+        expires_at = now + 3600
+        await aset_current_weather({
+            "key": weather.key, "name": weather.name, "emoji": weather.emoji,
+            "started_at": now, "expires_at": expires_at,
+        })
+
+        channel = self.bot.get_channel(WEATHER_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(WEATHER_CHANNEL_ID)
+            except discord.HTTPException:
+                channel = None
+        if channel is not None:
+            view = build_weather_view(weather, expires_at)
+            try:
+                await channel.send(view=view)
+            except discord.HTTPException:
+                pass
+
+    @weather_loop.before_loop
+    async def _before_weather_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="thời_tiết", description="Xem thời tiết câu cá hiện tại")
+    async def thoi_tiet(self, interaction: discord.Interaction) -> None:
+        # Chỉ dùng được đúng 1 kênh thời tiết — dùng ở kênh khác đều từ chối.
+        if interaction.channel_id != WEATHER_CHANNEL_ID:
+            await interaction.response.send_message(
+                f"⚠️ Lệnh này chỉ dùng được ở <#{WEATHER_CHANNEL_ID}>!",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        raw = await aget_current_weather()
+        if raw is None:
+            # Chưa có thời tiết nào được random (vd bot vừa deploy lần đầu,
+            # weather_loop chưa kịp chạy) -> random ngay 1 cái để không trống.
+            weather = roll_weather()
+            now = time.time()
+            expires_at = now + 3600
+            await aset_current_weather({
+                "key": weather.key, "name": weather.name, "emoji": weather.emoji,
+                "started_at": now, "expires_at": expires_at,
+            })
+        else:
+            weather = WEATHER_BY_KEY.get(raw.get("key"), WEATHERS[0])
+            expires_at = raw.get("expires_at")
+        await interaction.followup.send(view=build_weather_view(weather, expires_at))
 
     @app_commands.command(name="câu_cá", description="Thả cần câu cá!")
     async def cau_ca(self, interaction: discord.Interaction) -> None:
@@ -1683,7 +1855,19 @@ class CauCaVanCan(commands.Cog):
         data["last_cast"] = now
         await asave_user_data(interaction.user.id, data)
 
-        fish = roll_fish(rod, map_key=data.get("current_map"))
+        # Thời tiết hiện tại (toàn server) — áp dụng cho suốt ván câu này dù
+        # thời tiết có đổi giữa chừng (snapshot tại lúc thả cần).
+        weather: Optional[Weather] = None
+        weather_raw = await aget_current_weather()
+        if weather_raw and weather_raw.get("expires_at", 0) > now:
+            weather = WEATHER_BY_KEY.get(weather_raw.get("key"))
+        if weather:
+            luck_bonus += weather.luck_delta
+
+        fish = roll_fish(
+            rod, map_key=data.get("current_map"),
+            boss_weight_mult=weather.boss_weight_mult if weather else 1.0,
+        )
         is_boss = fish.key in BOSS_FISH_KEYS
         rank_label, rank_badge = rank_for_score(data["score"])
         level = data.get("level", 1)
@@ -1736,6 +1920,7 @@ class CauCaVanCan(commands.Cog):
             interaction.user, rod, fish, luck_bonus, rank_label, rank_badge,
             bait_name, bait_time_left, on_finish,
             is_boss=is_boss, energy=energy, max_energy=max_energy, skills=skills,
+            weather=weather,
         )
         view.message = await interaction.followup.send(view=view, wait=True)
 

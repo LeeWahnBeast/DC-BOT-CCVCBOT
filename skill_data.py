@@ -36,7 +36,7 @@ class Skill:
     key: str
     name: str
     emoji: str
-    effect: str            # "reduce_tension" | "slow_tension"
+    effect: str            # "reduce_tension" | "slow_tension" | "instant_finish"
     value: float             # reduce_tension: % trừ ngay; slow_tension: % giảm tốc độ tăng
     energy_cost: int          # thể lực tiêu hao mỗi lần dùng (1 lần/ván câu)
     price_vang: int            # giá mở khóa, quy về giá triệu (bội số 1.000.000)
@@ -71,6 +71,38 @@ SKILL_SHOP: list[Skill] = [
         "an_nhien_cau", "An Nhiên", "🍃", "slow_tension", 1.0, 60, 150_000_000,
         duration_s=10,
         description="Tâm bất động trước sóng gió, độ căng dây HOÀN TOÀN không tăng trong ít giây.",
+    ),
+    # -- Skill tự thêm (KHÔNG lấy từ ảnh/game gốc — không tìm được nguồn để
+    # đối chiếu). Chèn theo giá tăng dần giữa các skill đã có, dùng đúng 2
+    # loại effect sẵn có để không cần sửa logic ReelView trong fishing_cog.py.
+    Skill(
+        "ngu_vuong_ap_che", "Ngư Vương Áp Chế", "🐋", "reduce_tension", 0.75, 55, 100_000_000,
+        description="Dồn sức áp đảo con mồi, trừ ngay phần lớn độ căng dây hiện tại.",
+    ),
+    Skill(
+        "tinh_lang_vinh_hang", "Tĩnh Lặng Vĩnh Hằng", "🌙", "slow_tension", 0.85, 80, 220_000_000,
+        duration_s=15,
+        description="Vạn vật lặng yên quanh cần câu, độ căng dây tăng cực chậm trong một khoảng dài.",
+    ),
+    # Tuyệt kỹ tối thượng — lấy cảm hứng từ trò đùa nổi tiếng trong giới câu
+    # cá "một cần mở toang cổng trời" (một cần câu được luôn cá cực lớn bất
+    # kể máu cá còn bao nhiêu). Giá/thể lực cao nhất trong shop, chỉ nên
+    # dùng khi chắc chắn muốn kết thúc ván ngay lập tức (ăn chắc cá, tránh
+    # rủi ro đứt dây giữa chừng với cá dai/boss).
+    Skill(
+        "khai_thien_mon", "Khai Thiên Môn Đập Cá", "🌌", "instant_finish", 1.0, 100, 300_000_000,
+        description=(
+            "Tuyệt kỹ tối thượng — dồn hết nội lực, \"một cần mở toang cổng "
+            "trời\", đập thẳng cá vào bờ và BẮT NGAY LẬP TỨC bất kể máu cá "
+            "còn lại bao nhiêu."
+        ),
+    ),
+    # -- Skill tự thêm — lựa chọn thay thế cho ai không muốn dùng
+    # instant_finish, đắt/tốn thể lực hơn cả Khai Thiên Môn.
+    Skill(
+        "thien_dia_dong_tho", "Thiên Địa Đồng Thọ", "☯️", "slow_tension", 1.0, 90, 500_000_000,
+        duration_s=20,
+        description="Hợp nhất cùng trời đất, độ căng dây HOÀN TOÀN không tăng trong thời gian dài.",
     ),
 ]
 
