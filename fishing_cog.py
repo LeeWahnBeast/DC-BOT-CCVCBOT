@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -376,6 +377,19 @@ class ReelView(discord.ui.LayoutView):
         self.message: Optional[discord.Message] = None
         self._lock = asyncio.Lock()  # chặn _on_pull và _idle_tick edit chồng lên nhau
 
+        # QUAN TRỌNG: custom_id CỐ ĐỊNH cho nút "Kéo!", tạo 1 LẦN DUY NHẤT ở
+        # đây (không tạo lại mỗi lần _render()). Discord bắt buộc mỗi nút phải
+        # có custom_id, và nếu không tự đặt thì discord.py auto-sinh 1 id NGẪU
+        # NHIÊN MỚI mỗi lần Button() được khởi tạo. Vì _render() bị gọi lại
+        # liên tục (kể cả bởi _idle_tick chạy nền mỗi giây) và luôn dựng lại
+        # Button từ đầu, custom_id sẽ đổi liên tục nếu không cố định — dẫn tới
+        # đúng lỗi "Tương tác này thất bại": người dùng bấm nút với custom_id
+        # của bản UI cũ (bot vừa edit đổi custom_id mới ngay trước đó do
+        # idle_tick), Discord gửi interaction lên nhưng view hiện tại không
+        # còn item nào khớp custom_id đó nữa nên không có callback nào được
+        # gọi -> tương tác rơi vào hư không, Discord báo lỗi cho user.
+        self._cid_pull = f"reel_pull_{uuid.uuid4().hex}"
+
         self._render()
         self._idle_tick.start()
 
@@ -450,7 +464,9 @@ class ReelView(discord.ui.LayoutView):
         container.add_item(discord.ui.Separator())
 
         row = discord.ui.ActionRow()
-        btn = discord.ui.Button(label="🎣 Kéo!", style=discord.ButtonStyle.primary)
+        btn = discord.ui.Button(
+            label="🎣 Kéo!", style=discord.ButtonStyle.primary, custom_id=self._cid_pull,
+        )
         btn.callback = self._on_pull
         row.add_item(btn)
         container.add_item(row)
@@ -577,6 +593,13 @@ class RodShopView(discord.ui.LayoutView):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.index = index
+        # custom_id cố định cho từng nút (xem giải thích chi tiết trong
+        # ReelView.__init__) — tránh lỗi "tương tác thất bại" khi _render()
+        # bị gọi lại (chuyển trang, mua/trang bị cần).
+        self._cid_prev = f"rodshop_prev_{uuid.uuid4().hex}"
+        self._cid_next = f"rodshop_next_{uuid.uuid4().hex}"
+        self._cid_equip = f"rodshop_equip_{uuid.uuid4().hex}"
+        self._cid_buy = f"rodshop_buy_{uuid.uuid4().hex}"
         self._render(data)
 
     @classmethod
@@ -613,12 +636,12 @@ class RodShopView(discord.ui.LayoutView):
         nav_row = discord.ui.ActionRow()
         prev_btn = discord.ui.Button(
             label="◀ Trước", style=discord.ButtonStyle.secondary,
-            disabled=self.index == 0,
+            disabled=self.index == 0, custom_id=self._cid_prev,
         )
         prev_btn.callback = self._go_prev
         next_btn = discord.ui.Button(
             label="Sau ▶", style=discord.ButtonStyle.secondary,
-            disabled=self.index == len(ROD_LIST) - 1,
+            disabled=self.index == len(ROD_LIST) - 1, custom_id=self._cid_next,
         )
         next_btn.callback = self._go_next
         nav_row.add_item(prev_btn)
@@ -627,11 +650,15 @@ class RodShopView(discord.ui.LayoutView):
 
         action_row = discord.ui.ActionRow()
         if owned:
-            equip_btn = discord.ui.Button(label="Trang bị", style=discord.ButtonStyle.success)
+            equip_btn = discord.ui.Button(
+                label="Trang bị", style=discord.ButtonStyle.success, custom_id=self._cid_equip,
+            )
             equip_btn.callback = self._equip
             action_row.add_item(equip_btn)
         elif rod.price_vang is not None:
-            buy_btn = discord.ui.Button(label="Mở Khóa", style=discord.ButtonStyle.primary)
+            buy_btn = discord.ui.Button(
+                label="Mở Khóa", style=discord.ButtonStyle.primary, custom_id=self._cid_buy,
+            )
             buy_btn.callback = self._buy
             action_row.add_item(buy_btn)
         else:
@@ -711,6 +738,12 @@ class SellView(discord.ui.LayoutView):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.tier_index = tier_index
+        # custom_id cố định cho từng control (xem giải thích trong ReelView.__init__).
+        self._cid_prev = f"sell_prev_{uuid.uuid4().hex}"
+        self._cid_next = f"sell_next_{uuid.uuid4().hex}"
+        self._cid_sell_tier = f"sell_tier_{uuid.uuid4().hex}"
+        self._cid_sell_all = f"sell_all_{uuid.uuid4().hex}"
+        self._cid_select = f"sell_select_{uuid.uuid4().hex}"
         self._render(data)
 
     @classmethod
@@ -763,6 +796,7 @@ class SellView(discord.ui.LayoutView):
         if owned:
             select = discord.ui.Select(
                 placeholder="Chọn 1 loại cá để bán toàn bộ số lượng đang có...",
+                custom_id=self._cid_select,
                 options=[
                     discord.SelectOption(
                         label=f"{fish.name} (SL {qty})",
@@ -779,10 +813,11 @@ class SellView(discord.ui.LayoutView):
 
         nav_row = discord.ui.ActionRow()
         prev_btn = discord.ui.Button(label="◀ Trước", style=discord.ButtonStyle.secondary,
-                                       disabled=self.tier_index == 0)
+                                       disabled=self.tier_index == 0, custom_id=self._cid_prev)
         prev_btn.callback = self._go_prev
         next_btn = discord.ui.Button(label="Sau ▶", style=discord.ButtonStyle.secondary,
-                                       disabled=self.tier_index == len(TIERS) - 1)
+                                       disabled=self.tier_index == len(TIERS) - 1,
+                                       custom_id=self._cid_next)
         next_btn.callback = self._go_next
         nav_row.add_item(prev_btn)
         nav_row.add_item(next_btn)
@@ -792,11 +827,13 @@ class SellView(discord.ui.LayoutView):
         sell_tier_btn = discord.ui.Button(
             label=f"💰 Bán Nhanh (cấp này: {fmt_vang(tier_total)})",
             style=discord.ButtonStyle.success, disabled=tier_total == 0,
+            custom_id=self._cid_sell_tier,
         )
         sell_tier_btn.callback = self._sell_tier
         sell_all_btn = discord.ui.Button(
             label=f"💎 Bán Nhanh (Tất Cả: {fmt_vang(grand_total)})",
             style=discord.ButtonStyle.danger, disabled=grand_total == 0,
+            custom_id=self._cid_sell_all,
         )
         sell_all_btn.callback = self._sell_all
         action_row.add_item(sell_tier_btn)
