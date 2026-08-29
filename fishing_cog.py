@@ -1,32 +1,39 @@
 """
-Cog: Câu Cá Vạn Cân
+fishing_cog.py
 ====================
-Tính năng câu cá cho Delta Mick Bot: shop cần câu, cơ chế câu/gãy cần,
-gửi kết quả bằng Discord Components V2 (Container/TextDisplay/MediaGallery),
-KHÔNG dùng embed.
+Cog câu cá: shop cần câu, câu cá bằng minigame "Kéo" (không phải spam —
+mỗi lần bấm có cooldown chống spam, dây câu có giới hạn độ dài và sẽ ĐỨT
+nếu kéo quá tay), kho cá + lệnh bán riêng, shop mồi câu.
+
+Kết quả gửi bằng Discord Components V2 (Container/TextDisplay/
+MediaGallery/Separator) — KHÔNG dùng embed, theo đúng yêu cầu gốc.
 
 YÊU CẦU
 -------
-- discord.py >= 2.4 (bản có hỗ trợ Components V2: discord.ui.LayoutView,
+- discord.py >= 2.4 (bản có Components V2: discord.ui.LayoutView,
   discord.ui.Container, discord.ui.TextDisplay, discord.ui.MediaGallery,
-  discord.ui.Separator). Nếu bot đang ở bản cũ hơn, chạy:
-      pip install -U discord.py
-  và kiểm tra lại tên class vì API Components V2 vẫn có thể đổi giữa các
-  bản phát hành.
+  discord.ui.Separator, discord.ui.ActionRow, discord.ui.Select).
 
-TÍCH HỢP VỚI BOT HIỆN TẠI
---------------------------
-- get_user_data / save_user_data được import từ firebase_db.py (đọc/ghi
-  nhánh "fishing/users/<user_id>" trên Firebase Realtime Database). Đổi
-  DB_ROOT trong firebase_db.py nếu bot đã có sẵn cấu trúc nhánh khác.
-- Điền OWNER_IDS trong firebase_db.py để owner được bypass giá cần câu
-  (MICK = float("inf")) và bypass cooldown câu cá — cùng cơ chế sentinel
-  mà bot đang dùng ở các hệ thống kinh tế khác.
-- Nếu bot chính chưa initialize_app() Firebase ở nơi khác, gọi
-  firebase_db.init_firebase() một lần lúc bot khởi động (setup_hook/on_ready)
-  trước khi cog này được load.
-- File ảnh gãy cần đặt cùng thư mục: assets/can_gay.png (ảnh số 5 trong yêu
-  cầu gốc) — đổi ROD_BREAK_IMAGE nếu bạn để nơi khác.
+TIỀN TỆ
+-------
+3 loại: Vàng (chính — bán cá / mua cần / mua mồi), Kim Cương (premium),
+Cash (premium, nạp thật). Xem firebase_db.py để biết schema lưu.
+
+CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
+------------------------------
+- Bấm /câu_cá -> hệ thống roll 1 con cá theo cấp mà cần câu hiện có đủ
+  "Lực kéo" để tiếp cận (fish_data.tiers_unlocked_for_pull).
+- Mở ra khung "Kéo!" (1 nút duy nhất, sửa (edit) lại CÙNG 1 tin nhắn mỗi
+  lần bấm — không gửi tin nhắn mới, không phải spam):
+    * Mỗi lần bấm "Kéo!": tiến độ kéo cá (progress) tăng theo "Lực kéo"
+      của cần, đồng thời độ dài dây đã dùng (tension) cũng tăng theo %
+      của "Độ dài dây câu" tối đa của cần.
+    * Nếu progress đạt mục tiêu trước -> câu được cá, cá vào kho.
+    * Nếu tension chạm giới hạn "Độ dài dây câu" trước -> ĐỨT DÂY, cần
+      câu bị gãy (mất thời gian, không mất cần vĩnh viễn).
+    * Chống spam: mỗi nút chỉ nhận 1 lần bấm mỗi COOLDOWN_CLICK giây;
+      bấm dồn dập trong lúc đang hồi sẽ bị bỏ qua kèm cảnh báo, không
+      tính tiến độ lẫn không tăng thêm tension.
 """
 
 from __future__ import annotations
@@ -42,6 +49,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from firebase_db import OWNER_IDS, get_user_data, save_user_data
+from fish_data import ALL_FISH, FISH_BY_KEY, FISH_BY_TIER, TIERS, FishSpecies, tiers_unlocked_for_pull
+from rod_data import DEFAULT_ROD_KEY, RODS, ROD_LIST, Rod
 
 ASSET_DIR = Path(__file__).parent / "assets"
 ROD_BREAK_IMAGE = ASSET_DIR / "can_gay.png"
@@ -55,99 +64,14 @@ class E:
     TOP3 = "<:top3:1541849840571646043>"
     RANK_TRUYEN_THUYET = "<:12truyenthuyetcauca:1542120813212205066>"
     RANK_BAN_THANH = "<:8banthanhcauca:1542120804282531901>"
-    ROD_THEP_REN = "<:5canthepren:1542915747385311232>"
-    WEATHER_GIO = "<:gioto:1541471720823849050>"
-    BUFF_GIAM_TG = "<:giamthoigian:1541471728658681856>"
-    BAIT_CHU_SA = "<:2m:1542183289362845747>"
+    GOLD = "🪙"
+    DIAMOND = "💎"
+    CASH = "💵"
+    BAIT = "<:2m:1542183289362845747>"
     FISH_NUMBER = "<:39:1541129020635086968>"
 
 
-# ---------------------------------------------------------------------------
-# Dữ liệu cần câu (lấy từ danh sách shop "Cần Thường Trực" bạn cung cấp)
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class Rod:
-    key: str
-    name: str
-    emoji: str
-    dps: int                 # Sát thương/giây
-    pull: int                # Lực kéo
-    line_len: int             # Độ dài dây câu
-    effect: str               # Hiệu ứng đặc biệt
-    obtain: str                # Cách nhận
-    price_mick: Optional[int] = None   # None = không bán trực tiếp, phải làm nhiệm vụ
-
-
-ROD_LIST: list[Rod] = [
-    Rod("tre", "Cần Tre", "🎋", 12_000, 500, 20,
-        "Không", "Mua trực tiếp bằng Vàng", price_mick=1_500_000),
-    Rod("pho_cot_chi_thu", "Phó Cốt Chi Thứ", "🦴", 15_000, 400, 15,
-        "Mỗi đòn +500 sát thương", "Luyện từ Cá Mập Biến Dị 10 vạn cân"),
-    Rod("thep_ren", "Cần Thép Ren", E.ROD_THEP_REN, 40_000, 900, 45,
-        "Không", "Phần thưởng sự kiện"),
-    Rod("am_thep_gan", "Âm · Thép Gân", "⛓️", 20_000, 600, 40,
-        "Không", "Nhận khi hồi sinh Hạ Điếu Đế"),
-    Rod("thep_gan_vibranium", "Thép Gân Vibranium", "🩶", 30_000, 700, 40,
-        "Không", "Mua trực tiếp bằng Vàng", price_mick=3_000_000),
-    Rod("nuot_troi", "Cần Nuốt Trời", "🐉", 25_000, 500, 35,
-        "Nhận +20% sát thương câu, mỗi 200 thể lực tiêu hao +5% sát thương",
-        "Nhận từ phó bản Cá Chép Kình Biến"),
-    Rod("vuong_gia_dai_vat", "Vương Giả Đại Vật", "👑", 45_000, 1_000, 65,
-        "Đâm Cá: đòn đầu gây thêm 5%-25% máu tối đa mục tiêu",
-        "Thưởng Đại Hội Câu Cá"),
-    Rod("thanh_can", "Thanh Cần", "🗡️", 50_000, 1_300, 80,
-        "+100% sát thương câu Hàng Ngư Thần Bát",
-        "Vượt thử thách Thập Bát Điệu Sở Y Cửu"),
-    Rod("dao_moc", "Cần Đào Mộc", "🌳", 50_000, 800, 70,
-        "+100% sát thương Thuần Dương Điệu", "Cần đến Côn Luân Sơn"),
-    Rod("doc_cau_van_co", "Cần Độc Câu Vạn Cổ", "☠️", 250_000, 2_000, 150,
-        "+100% lực kéo, -40% hồi chiêu điệu câu, -40% tiêu hao thể lực",
-        "Làm từ Rùa Cá Sấu Trăm Hắc Thủy Thần"),
-    Rod("phat_tran", "Cần Câu Phất Trần", "🪶", 200_000, 1_000, 100,
-        "+100% sát thương loạt điệu Câu Mao Sơn, -50% tiêu hao thể lực",
-        "Cần đến Ai Lao Sơn"),
-    Rod("thien_truong", "Cần Câu Thiền Trượng", "🔱", 300_000, 1_200, 150,
-        "+200% sát thương Thái Cực Điệu, -30% hồi chiêu câu, "
-        "+200% kỹ năng câu của Biểu Ca", "Nhận Dây Âm Dương Ngư"),
-    Rod("ac_ngu", "Cần Ác Ngư", "🐟", 500_000, 1_500, 100,
-        "+160% sát thương câu, +100% tiêu hao thể lực",
-        "Thu thập tại vùng biển Somalia"),
-    Rod("danh_than", "Cần Đánh Thần", "⚡", 2_500_000, 2_000, 500,
-        "+120% sát thương câu, +100% sát thương Chung Chương/Điệu Câu đỉnh cấp",
-        "Nhận tại Thần Nông Cốc"),
-    Rod("hien_vien", "Cần Hiên Viên", "🌟", 10_000_000, 3_000, 1_000,
-        "+30% hiệu năng Điều Hồn, +200% sát thương Điệu Câu, "
-        "-60% hồi chiêu Điều, -60% tiêu hao thể lực",
-        "Nhận tại Cấm Địa Sở Gia"),
-]
-RODS: dict[str, Rod] = {r.key: r for r in ROD_LIST}
-DEFAULT_ROD_KEY = "thep_ren"
-
-
-# ---------------------------------------------------------------------------
-# Dữ liệu cá — chỉnh/thêm tuỳ ý
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class FishSpecies:
-    key: str
-    name: str
-    min_kg: float
-    max_kg: float
-    base_pull: int      # Lực kéo cơ bản mà con cá này đòi hỏi
-    rarity_weight: int   # trọng số random, càng cao càng dễ ra
-    value_per_kg: int     # MICK thưởng mỗi kg khi bán
-
-
-FISH_POOL: list[FishSpecies] = [
-    FishSpecies("ca_chep", "Cá Chép", 1, 15, 300, 100, 20),
-    FishSpecies("ca_rong", "Cá Rồng", 10, 60, 800, 55, 45),
-    FishSpecies("ca_map", "Cá Mập", 40, 200, 1_400, 30, 80),
-    FishSpecies("rua_khong_lo", "Rùa Khổng Lồ", 100, 500, 2_200, 12, 150),
-    FishSpecies("xich_nhan", "Xích Nhân", 300, 900, 2_800, 5, 260),
-]
-
 RANK_TIERS = [
-    # (điểm tối thiểu, nhãn, badge emoji)
     (0, "Tân Thủ Câu Cá", ""),
     (1_000, "Bán Thánh Câu Cá", E.RANK_BAN_THANH),
     (5_000, "Truyền Thuyết Câu Cá", E.RANK_TRUYEN_THUYET),
@@ -162,32 +86,70 @@ def rank_for_score(score: int) -> tuple[str, str]:
     return label, badge
 
 
+def fmt_vang(n) -> str:
+    if n == float("inf"):
+        return "∞"
+    return f"{int(n):,}".replace(",", ".")
+
+
 # ---------------------------------------------------------------------------
-# Lưu trữ: get_user_data / save_user_data được import từ firebase_db.py
-# (đọc/ghi nhánh "fishing/users/<user_id>" trên Firebase Realtime Database).
+# Shop mồi câu (Vàng) — tăng % may mắn (giảm tension tăng thêm khi kéo,
+# tăng sát thương kéo) trong 1 khoảng thời gian.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Bait:
+    key: str
+    name: str
+    luck: float          # % luck, vd 0.15 = +15%
+    duration_s: int
+    price_vang: int
+
+
+BAIT_SHOP: list[Bait] = [
+    Bait("moi_thuong", "Mồi Thường", 0.05, 30 * 60, 50_000),
+    Bait("moi_chu_sa", "Mồi Chu Sa", 0.15, 30 * 60, 300_000),
+    Bait("moi_hoang_kim", "Mồi Hoàng Kim", 0.30, 60 * 60, 1_200_000),
+]
+BAITS: dict[str, Bait] = {b.key: b for b in BAIT_SHOP}
+
+
 # ---------------------------------------------------------------------------
 # Cơ chế câu cá
 # ---------------------------------------------------------------------------
-CAST_COOLDOWN_SECONDS = 12  # thời gian chờ câu cơ bản
+CAST_COOLDOWN_SECONDS = 12       # thời gian hồi giữa 2 lần /câu_cá
+CLICK_COOLDOWN_SECONDS = 0.6      # chống spam nút "Kéo!"
+REEL_TIMEOUT_SECONDS = 45.0        # không thao tác -> cá bỏ đi
 
 
-def calculate_outcome(rod: Rod, luck_bonus: float) -> tuple[bool, FishSpecies, float]:
-    """Roll một con cá, tính xem có câu thành công hay bị đứt/gãy cần.
+def roll_fish(rod: Rod) -> FishSpecies:
+    """Chọn 1 con cá theo cấp mà lực kéo của cần hiện có thể tiếp cận.
+    Cấp cao hơn có trọng số random thấp hơn (khó gặp hơn); trong 1 cấp,
+    cá giá cao hơn cũng hiếm hơn."""
+    tiers = tiers_unlocked_for_pull(rod.pull)
+    if not tiers:
+        tiers = [t for t in TIERS if FISH_BY_TIER[t.key]][:1]
 
-    Trả về (thành_công, loài_cá, cân_nặng_kg).
-    """
-    fish = random.choices(FISH_POOL, weights=[f.rarity_weight for f in FISH_POOL])[0]
-    weight = round(random.uniform(fish.min_kg, fish.max_kg), 1)
+    tier_weights = [1.0 / (i + 1) for i in range(len(tiers))]
+    tier = random.choices(tiers, weights=tier_weights)[0]
 
-    # Cá càng nặng (so với khung của loài) thì lực kéo đòi hỏi càng cao
-    ratio = (weight - fish.min_kg) / max(fish.max_kg - fish.min_kg, 0.01)
-    required_pull = fish.base_pull * (0.7 + 0.6 * ratio)
+    pool = FISH_BY_TIER[tier.key]
+    max_price = max(f.price for f in pool)
+    fish_weights = [ (max_price / f.price) ** 0.5 for f in pool ]
+    return random.choices(pool, weights=fish_weights)[0]
 
-    power_ratio = rod.pull / required_pull
-    success_chance = min(0.97, max(0.03, power_ratio * 0.65 + luck_bonus))
 
-    success = random.random() < success_chance
-    return success, fish, weight
+def compute_challenge(rod: Rod, fish: FishSpecies) -> tuple[float, float]:
+    """Tính (target_progress, tension_per_click_max) cho ván kéo cá.
+    Thiết kế theo tỉ lệ RIÊNG của từng cần (không phụ thuộc tuyệt đối vào
+    độ lớn số liệu giữa các cần khác nhau) để cần yếu/mạnh đều cần khoảng
+    5-12 lần bấm "Kéo!" hợp lý, cá đắt hơn trong cùng 1 cấp thì dai hơn."""
+    pool = FISH_BY_TIER[fish.tier_key]
+    max_price = max(f.price for f in pool)
+    price_ratio = fish.price / max_price  # 0..1, càng lớn cá càng "dai"
+
+    clicks_needed = random.uniform(4.0, 9.0) * (0.6 + 0.7 * price_ratio)
+    target = rod.pull * clicks_needed
+    return target, clicks_needed
 
 
 def format_time_left(seconds: float) -> str:
@@ -196,16 +158,21 @@ def format_time_left(seconds: float) -> str:
     return f"{m}p{s}s"
 
 
+def make_bar(ratio: float, size: int = 14, fill: str = "█", empty: str = "░") -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    filled = round(ratio * size)
+    return fill * filled + empty * (size - filled)
+
+
 # ---------------------------------------------------------------------------
-# Xây dựng khung kết quả bằng Components V2 (không dùng embed)
+# Khung kết quả (Components V2)
 # ---------------------------------------------------------------------------
 def build_fail_view(
     member: discord.Member,
     rod: Rod,
     rank_label: str,
     rank_badge: str,
-    weather: str = "Trời Gió",
-    buff_desc: str = "Giảm thời gian chờ câu",
+    reason: str = "Con cá đã giật đứt dây và bơi mất tiêu!",
 ) -> tuple[discord.ui.LayoutView, discord.File]:
     file = discord.File(ROD_BREAK_IMAGE, filename="can_gay.png")
 
@@ -214,9 +181,7 @@ def build_fail_view(
 
     header = (
         f"{E.TOP1} **{member.display_name}** {rank_badge} `[{rank_label}]`\n"
-        f"🎣 **Cần:** {rod.emoji} `{rod.name}`\n"
-        f"{E.WEATHER_GIO} {weather}\n"
-        f"{E.BUFF_GIAM_TG}: {buff_desc}"
+        f"🎣 **Cần:** {rod.emoji} `{rod.name}`"
     )
     container.add_item(discord.ui.TextDisplay(header))
     container.add_item(discord.ui.Separator())
@@ -224,8 +189,7 @@ def build_fail_view(
         discord.MediaGalleryItem("attachment://can_gay.png")
     ))
     container.add_item(discord.ui.TextDisplay(
-        "💥 **RẮC! Cần câu của bạn đã bị gãy!**\n"
-        "Con cá đã giật đứt dây và bơi mất tiêu!"
+        f"💥 **RẮC! Cần câu của bạn đã bị gãy!**\n{reason}"
     ))
     view.add_item(container)
     return view, file
@@ -237,9 +201,6 @@ def build_success_view(
     rank_label: str,
     rank_badge: str,
     fish: FishSpecies,
-    weight_kg: float,
-    weather: str = "Trời Gió",
-    buff_desc: str = "Giảm thời gian chờ câu",
     bait_name: Optional[str] = None,
     bait_luck: float = 0.0,
     bait_time_left: Optional[str] = None,
@@ -249,30 +210,175 @@ def build_success_view(
 
     header = (
         f"{E.TOP3} **{member.display_name}** {rank_badge} `[{rank_label}]`\n"
-        f"🎣 **Cần:** {rod.emoji} `{rod.name}`\n"
-        f"{E.WEATHER_GIO} {weather}\n"
-        f"{E.BUFF_GIAM_TG}: {buff_desc}"
+        f"🎣 **Cần:** {rod.emoji} `{rod.name}`"
     )
     if bait_name:
         header += (
-            f"\n✨ **Mồi đang dùng:** {E.BAIT_CHU_SA} **{bait_name}** "
-            f"(+{bait_luck:.2%} luck) - Còn `{bait_time_left}`"
+            f"\n✨ **Mồi đang dùng:** {E.BAIT} **{bait_name}** "
+            f"(+{bait_luck:.0%} may mắn) - Còn `{bait_time_left}`"
         )
     container.add_item(discord.ui.TextDisplay(header))
     container.add_item(discord.ui.Separator())
     container.add_item(discord.ui.TextDisplay(
-        f"**Chúc mừng bạn đã câu được:**\n**Tên cá:** {fish.name}"
+        f"**🎉 Chúc mừng bạn đã câu được:**\n"
+        f"**Tên cá:** {fish.name}\n"
+        f"**Khối lượng:** `{fish.weight_label}`\n"
+        f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / con"
     ))
     container.add_item(discord.ui.Separator())
     container.add_item(discord.ui.TextDisplay(
-        f"# {E.FISH_NUMBER}\n**Cân nặng:** `{weight_kg} kg`"
+        f"# {E.FISH_NUMBER}\nDùng `/bán` để đổi cá trong kho ra Vàng."
     ))
     view.add_item(container)
     return view
 
 
 # ---------------------------------------------------------------------------
-# Shop cần câu — cũng bằng Components V2, phân trang từng cây
+# Minigame "Kéo!" — sửa (edit) lại đúng 1 tin nhắn, có cooldown chống spam.
+# ---------------------------------------------------------------------------
+class ReelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        member: discord.Member,
+        rod: Rod,
+        fish: FishSpecies,
+        luck_bonus: float,
+        rank_label: str,
+        rank_badge: str,
+        bait_name: Optional[str],
+        bait_time_left: Optional[str],
+        on_finish,
+    ):
+        super().__init__(timeout=REEL_TIMEOUT_SECONDS)
+        self.member = member
+        self.rod = rod
+        self.fish = fish
+        self.luck_bonus = luck_bonus
+        self.rank_label = rank_label
+        self.rank_badge = rank_badge
+        self.bait_name = bait_name
+        self.bait_time_left = bait_time_left
+        self.on_finish = on_finish  # async callback(success: bool)
+
+        self.target, _ = compute_challenge(rod, fish)
+        self.progress = 0.0
+        self.tension_max = 100.0  # % — quy về 0-100 cho dễ hiển thị, tương ứng độ dài dây câu tối đa của cần
+        self.tension = 0.0
+        self.last_click = 0.0
+        self.finished = False
+        self.message: Optional[discord.Message] = None
+
+        self._render()
+
+    # -- render -------------------------------------------------------
+    def _render(self) -> None:
+        self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Colour.blue())
+        header = (
+            f"🎣 **{self.member.display_name}** đang câu...\n"
+            f"**Cần:** {self.rod.emoji} `{self.rod.name}` "
+            f"(Độ dài dây câu: `{self.rod.line_len}`)"
+        )
+        if self.bait_name:
+            header += f"\n✨ Mồi: {E.BAIT} **{self.bait_name}** - Còn `{self.bait_time_left}`"
+        container.add_item(discord.ui.TextDisplay(header))
+        container.add_item(discord.ui.Separator())
+
+        progress_ratio = min(1.0, self.progress / self.target) if self.target else 0.0
+        tension_ratio = min(1.0, self.tension / self.tension_max)
+        container.add_item(discord.ui.TextDisplay(
+            f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
+            f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
+            f"Tiến độ kéo cá: `{make_bar(progress_ratio)}` {progress_ratio:.0%}\n"
+            f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}"
+        ))
+        container.add_item(discord.ui.Separator())
+
+        row = discord.ui.ActionRow()
+        btn = discord.ui.Button(label="🎣 Kéo!", style=discord.ButtonStyle.primary)
+        btn.callback = self._on_pull
+        row.add_item(btn)
+        container.add_item(row)
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.member.id:
+            await interaction.response.send_message(
+                "Đây không phải cần câu của bạn!", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _on_pull(self, interaction: discord.Interaction) -> None:
+        if self.finished:
+            await interaction.response.defer()
+            return
+        if not await self._guard(interaction):
+            return
+
+        now = time.time()
+        if now - self.last_click < CLICK_COOLDOWN_SECONDS:
+            await interaction.response.send_message(
+                "⚠️ Đừng kéo dồn dập quá, để cá lấy hơi đã rồi hẵng kéo tiếp!",
+                ephemeral=True,
+            )
+            return
+        self.last_click = now
+
+        dmg = self.rod.pull * random.uniform(0.9, 1.3) * (1 + self.luck_bonus * 0.5)
+        self.progress += dmg
+
+        tension_gain = 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4)
+        self.tension += max(1.0, tension_gain)
+
+        if self.progress >= self.target:
+            self.finished = True
+            await self._finish(interaction, success=True)
+            return
+        if self.tension >= self.tension_max:
+            self.finished = True
+            await self._finish(interaction, success=False)
+            return
+
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _finish(self, interaction: discord.Interaction, success: bool) -> None:
+        self.clear_items()
+        self.stop()
+        if success:
+            view = build_success_view(
+                self.member, self.rod, self.rank_label, self.rank_badge, self.fish,
+                bait_name=self.bait_name, bait_luck=self.luck_bonus,
+                bait_time_left=self.bait_time_left,
+            )
+            await interaction.response.edit_message(view=view, attachments=[])
+        else:
+            view, file = build_fail_view(self.member, self.rod, self.rank_label, self.rank_badge)
+            await interaction.response.edit_message(view=view, attachments=[file])
+        await self.on_finish(success)
+
+    async def on_timeout(self) -> None:
+        if self.finished:
+            return
+        self.finished = True
+        self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Colour.dark_grey())
+        container.add_item(discord.ui.TextDisplay(
+            f"💤 **{self.member.display_name}** đứng câu quá lâu, con cá đã tự bơi đi mất..."
+        ))
+        self.add_item(container)
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+        await self.on_finish(None)
+
+
+# ---------------------------------------------------------------------------
+# Shop cần câu — Components V2, phân trang từng cây
 # ---------------------------------------------------------------------------
 class RodShopView(discord.ui.LayoutView):
     def __init__(self, user_id: int, index: int = 0):
@@ -288,11 +394,13 @@ class RodShopView(discord.ui.LayoutView):
         owned = rod.key in data["unlocked_rods"]
 
         container = discord.ui.Container(accent_colour=discord.Colour.blurple())
-        container.add_item(discord.ui.TextDisplay(f"## {rod.emoji} {rod.name}"))
+        container.add_item(discord.ui.TextDisplay(
+            f"## {rod.emoji} {rod.name}  ({self.index + 1}/{len(ROD_LIST)})"
+        ))
 
         price_line = (
-            f"💰 Giá: `{rod.price_mick:,} MICK`" if rod.price_mick is not None
-            else "🔒 Không bán trực tiếp"
+            f"{E.GOLD} Giá: `{fmt_vang(rod.price_vang)}` Vàng" if rod.price_vang is not None
+            else "🔒 Không bán trực tiếp — xem cách nhận bên dưới"
         )
         stats = (
             f"**Sát thương/giây:** `{rod.dps:,}`\n"
@@ -322,10 +430,10 @@ class RodShopView(discord.ui.LayoutView):
 
         action_row = discord.ui.ActionRow()
         if owned:
-            equip_btn = discord.ui.Button(label="Đang/Chọn dùng", style=discord.ButtonStyle.success)
+            equip_btn = discord.ui.Button(label="Trang bị", style=discord.ButtonStyle.success)
             equip_btn.callback = self._equip
             action_row.add_item(equip_btn)
-        elif rod.price_mick is not None:
+        elif rod.price_vang is not None:
             buy_btn = discord.ui.Button(label="Mở Khóa", style=discord.ButtonStyle.primary)
             buy_btn.callback = self._buy
             action_row.add_item(buy_btn)
@@ -369,12 +477,12 @@ class RodShopView(discord.ui.LayoutView):
         if rod.key in data["unlocked_rods"]:
             await interaction.response.send_message("Bạn đã sở hữu cần này rồi!", ephemeral=True)
             return
-        if data["mick"] < (rod.price_mick or 0):
+        if data["vang"] < (rod.price_vang or 0):
             await interaction.response.send_message(
-                f"Bạn không đủ MICK! Cần `{rod.price_mick:,}` MICK.", ephemeral=True
+                f"Bạn không đủ Vàng! Cần `{fmt_vang(rod.price_vang)}` Vàng.", ephemeral=True
             )
             return
-        data["mick"] -= rod.price_mick
+        data["vang"] -= rod.price_vang
         data["unlocked_rods"].append(rod.key)
         save_user_data(self.user_id, data)
         self._render()
@@ -393,20 +501,191 @@ class RodShopView(discord.ui.LayoutView):
 
 
 # ---------------------------------------------------------------------------
+# Kho cá + bán cá — Components V2, phân trang theo cấp (tier)
+# ---------------------------------------------------------------------------
+class SellView(discord.ui.LayoutView):
+    def __init__(self, user_id: int, tier_index: int = 0):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.tier_index = tier_index
+        self._render()
+
+    def _owned_in_tier(self, data: dict, tier_key: str) -> list[tuple[FishSpecies, int]]:
+        inv = data.get("inventory", {})
+        out = []
+        for fish in FISH_BY_TIER[tier_key]:
+            qty = inv.get(fish.key, 0)
+            if qty > 0:
+                out.append((fish, qty))
+        return out
+
+    def _render(self) -> None:
+        self.clear_items()
+        data = get_user_data(self.user_id)
+        tier = TIERS[self.tier_index]
+        owned = self._owned_in_tier(data, tier.key)
+        tier_total = sum(f.price * q for f, q in owned)
+        grand_total = sum(
+            f.price * q for f in ALL_FISH for k, q in [(f.key, data.get("inventory", {}).get(f.key, 0))] if q > 0
+        )
+
+        container = discord.ui.Container(accent_colour=discord.Colour.green())
+        container.add_item(discord.ui.TextDisplay(
+            f"## 🐟 Kho Cá — {tier.label}  ({self.tier_index + 1}/{len(TIERS)})"
+        ))
+
+        if not owned:
+            container.add_item(discord.ui.TextDisplay("_Bạn chưa có cá nào ở cấp này._"))
+        else:
+            lines = []
+            for fish, qty in owned:
+                lines.append(
+                    f"**{fish.name}** (`{fish.weight_label}`) — SL: `{qty}` — "
+                    f"Đơn giá: {E.GOLD}`{fmt_vang(fish.price)}` — "
+                    f"Tổng: {E.GOLD}`{fmt_vang(fish.price * qty)}`"
+                )
+            container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"**Tổng giá trị cấp này:** {E.GOLD} `{fmt_vang(tier_total)}` Vàng\n"
+            f"**Tổng giá trị toàn bộ kho:** {E.GOLD} `{fmt_vang(grand_total)}` Vàng"
+        ))
+        container.add_item(discord.ui.Separator())
+
+        if owned:
+            select = discord.ui.Select(
+                placeholder="Chọn 1 loại cá để bán toàn bộ số lượng đang có...",
+                options=[
+                    discord.SelectOption(
+                        label=f"{fish.name} (SL {qty})",
+                        description=f"{fish.weight_label} · {fmt_vang(fish.price)} Vàng/con",
+                        value=fish.key,
+                    )
+                    for fish, qty in owned[:25]
+                ],
+            )
+            select.callback = self._sell_selected
+            row = discord.ui.ActionRow()
+            row.add_item(select)
+            container.add_item(row)
+
+        nav_row = discord.ui.ActionRow()
+        prev_btn = discord.ui.Button(label="◀ Trước", style=discord.ButtonStyle.secondary,
+                                       disabled=self.tier_index == 0)
+        prev_btn.callback = self._go_prev
+        next_btn = discord.ui.Button(label="Sau ▶", style=discord.ButtonStyle.secondary,
+                                       disabled=self.tier_index == len(TIERS) - 1)
+        next_btn.callback = self._go_next
+        nav_row.add_item(prev_btn)
+        nav_row.add_item(next_btn)
+        container.add_item(nav_row)
+
+        action_row = discord.ui.ActionRow()
+        sell_tier_btn = discord.ui.Button(
+            label=f"💰 Bán Nhanh (cấp này: {fmt_vang(tier_total)})",
+            style=discord.ButtonStyle.success, disabled=tier_total == 0,
+        )
+        sell_tier_btn.callback = self._sell_tier
+        sell_all_btn = discord.ui.Button(
+            label=f"💎 Bán Nhanh (Tất Cả: {fmt_vang(grand_total)})",
+            style=discord.ButtonStyle.danger, disabled=grand_total == 0,
+        )
+        sell_all_btn.callback = self._sell_all
+        action_row.add_item(sell_tier_btn)
+        action_row.add_item(sell_all_btn)
+        container.add_item(action_row)
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Đây không phải kho cá của bạn!", ephemeral=True)
+            return False
+        return True
+
+    async def _go_prev(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        self.tier_index = max(0, self.tier_index - 1)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _go_next(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        self.tier_index = min(len(TIERS) - 1, self.tier_index + 1)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _sell_selected(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        fish_key = interaction.data["values"][0]
+        fish = FISH_BY_KEY.get(fish_key)
+        data = get_user_data(self.user_id)
+        qty = data.get("inventory", {}).get(fish_key, 0)
+        if not fish or qty <= 0:
+            await interaction.response.send_message("Bạn không còn cá này trong kho!", ephemeral=True)
+            return
+        gained = fish.price * qty
+        data["inventory"][fish_key] = 0
+        data["vang"] += gained
+        save_user_data(self.user_id, data)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _sell_tier(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        data = get_user_data(self.user_id)
+        owned = self._owned_in_tier(data, TIERS[self.tier_index].key)
+        gained = 0
+        for fish, qty in owned:
+            gained += fish.price * qty
+            data["inventory"][fish.key] = 0
+        data["vang"] += gained
+        save_user_data(self.user_id, data)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _sell_all(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        data = get_user_data(self.user_id)
+        inv = data.get("inventory", {})
+        gained = 0
+        for fish in ALL_FISH:
+            qty = inv.get(fish.key, 0)
+            if qty > 0:
+                gained += fish.price * qty
+                inv[fish.key] = 0
+        data["inventory"] = inv
+        data["vang"] += gained
+        save_user_data(self.user_id, data)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 class CauCaVanCan(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="câu_cá", description="Thả cần câu cá vạn cân!")
+    @app_commands.command(name="câu_cá", description="Thả cần câu cá!")
     async def cau_ca(self, interaction: discord.Interaction) -> None:
+        # defer() ngay lập tức trước khi đụng tới Firebase — tránh lỗi
+        # "Ứng dụng không phản hồi" nếu việc đọc/ghi DB mất hơn 3 giây.
+        await interaction.response.defer()
+
         data = get_user_data(interaction.user.id)
 
         now = time.time()
         remaining = CAST_COOLDOWN_SECONDS - (now - data["last_cast"])
         if remaining > 0 and interaction.user.id not in OWNER_IDS:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"⏳ Cần câu đang hồi chiêu, chờ thêm `{remaining:.1f}s` nữa nhé!",
                 ephemeral=True,
             )
@@ -425,35 +704,88 @@ class CauCaVanCan(commands.Cog):
         elif bait:
             data["bait"] = None  # mồi đã hết hạn
 
-        await interaction.response.defer()
-
-        success, fish, weight = calculate_outcome(rod, luck_bonus)
         data["last_cast"] = now
-
-        rank_label, rank_badge = rank_for_score(data["score"])
-
-        if not success:
-            data["score"] = max(0, data["score"] - 5)
-            save_user_data(interaction.user.id, data)
-            view, file = build_fail_view(interaction.user, rod, rank_label, rank_badge)
-            await interaction.followup.send(view=view, files=[file])
-            return
-
-        reward = round(fish.value_per_kg * weight)
-        data["mick"] += reward
-        data["score"] += 10
         save_user_data(interaction.user.id, data)
 
-        view = build_success_view(
-            interaction.user, rod, rank_label, rank_badge, fish, weight,
-            bait_name=bait_name, bait_luck=luck_bonus, bait_time_left=bait_time_left,
+        fish = roll_fish(rod)
+        rank_label, rank_badge = rank_for_score(data["score"])
+
+        async def on_finish(success: Optional[bool]) -> None:
+            fresh = get_user_data(interaction.user.id)
+            if success is True:
+                inv = fresh.get("inventory", {})
+                inv[fish.key] = inv.get(fish.key, 0) + 1
+                fresh["inventory"] = inv
+                fresh["score"] = fresh.get("score", 0) + 10
+            elif success is False:
+                fresh["score"] = max(0, fresh.get("score", 0) - 5)
+            # success is None (timeout) -> không cộng/trừ gì, cá tự bơi đi
+            save_user_data(interaction.user.id, fresh)
+
+        view = ReelView(
+            interaction.user, rod, fish, luck_bonus, rank_label, rank_badge,
+            bait_name, bait_time_left, on_finish,
         )
-        await interaction.followup.send(view=view)
+        view.message = await interaction.followup.send(view=view, wait=True)
 
     @app_commands.command(name="shop_cần", description="Xem và mở khóa cần câu")
     async def shop_can(self, interaction: discord.Interaction) -> None:
         view = RodShopView(user_id=interaction.user.id)
         await interaction.response.send_message(view=view)
+
+    @app_commands.command(name="bán", description="Xem kho cá và bán cá lấy Vàng")
+    async def ban(self, interaction: discord.Interaction) -> None:
+        view = SellView(user_id=interaction.user.id)
+        await interaction.response.send_message(view=view)
+
+    @app_commands.command(name="mua_mồi", description="Mua mồi câu để tăng % may mắn khi câu")
+    @app_commands.choices(loai_moi=[
+        app_commands.Choice(name=f"{b.name} (+{b.luck:.0%} may mắn, {b.duration_s // 60} phút — {b.price_vang:,} Vàng)",
+                             value=b.key)
+        for b in BAIT_SHOP
+    ])
+    async def mua_moi(self, interaction: discord.Interaction, loai_moi: app_commands.Choice[str]) -> None:
+        bait = BAITS[loai_moi.value]
+        data = get_user_data(interaction.user.id)
+        if data["vang"] < bait.price_vang:
+            await interaction.response.send_message(
+                f"Bạn không đủ Vàng! Cần `{fmt_vang(bait.price_vang)}` Vàng.", ephemeral=True
+            )
+            return
+        data["vang"] -= bait.price_vang
+        data["bait"] = {
+            "name": bait.name,
+            "luck": bait.luck,
+            "expires_at": time.time() + bait.duration_s,
+        }
+        save_user_data(interaction.user.id, data)
+        await interaction.response.send_message(
+            f"✅ Đã dùng {E.BAIT} **{bait.name}** (+{bait.luck:.0%} may mắn, "
+            f"còn `{format_time_left(bait.duration_s)}`)!",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="ví", description="Xem số Vàng / Kim Cương / Cash hiện có")
+    async def vi(self, interaction: discord.Interaction) -> None:
+        data = get_user_data(interaction.user.id)
+        rank_label, rank_badge = rank_for_score(data["score"])
+        rod = RODS.get(data["rod"], RODS[DEFAULT_ROD_KEY])
+
+        view = discord.ui.LayoutView(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
+        container.add_item(discord.ui.TextDisplay(
+            f"## 👛 Ví của {interaction.user.display_name}\n"
+            f"{rank_badge} `[{rank_label}]` — Điểm: `{data['score']}`"
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"{E.GOLD} **Vàng:** `{fmt_vang(data['vang'])}`\n"
+            f"{E.DIAMOND} **Kim Cương:** `{fmt_vang(data['kim_cuong'])}`\n"
+            f"{E.CASH} **Cash:** `{fmt_vang(data['cash'])}`\n"
+            f"🎣 **Cần đang dùng:** {rod.emoji} `{rod.name}`"
+        ))
+        view.add_item(container)
+        await interaction.response.send_message(view=view, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
