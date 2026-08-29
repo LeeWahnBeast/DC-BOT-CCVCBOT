@@ -38,6 +38,7 @@ CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from dataclasses import dataclass
@@ -46,7 +47,7 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from firebase_db import OWNER_IDS, aget_user_data, asave_user_data
 from fish_data import ALL_FISH, FISH_BY_KEY, FISH_BY_TIER, TIERS, FishSpecies, tiers_unlocked_for_pull
@@ -57,18 +58,18 @@ ROD_BREAK_IMAGE = ASSET_DIR / "can_gay.png"
 
 
 # ---------------------------------------------------------------------------
-# Emoji dùng trong khung kết quả (thay id nếu emoji khác trên server của bạn)
+# Emoji dùng trong khung kết quả (icon mặc định — không phụ thuộc server nào)
 # ---------------------------------------------------------------------------
 class E:
-    TOP1 = "<:top1:1541849836670947418>"
-    TOP3 = "<:top3:1541849840571646043>"
-    RANK_TRUYEN_THUYET = "<:12truyenthuyetcauca:1542120813212205066>"
-    RANK_BAN_THANH = "<:8banthanhcauca:1542120804282531901>"
+    TOP1 = "🥇"
+    TOP3 = "🏆"
+    RANK_TRUYEN_THUYET = "🐉"
+    RANK_BAN_THANH = "⭐"
     GOLD = "🪙"
     DIAMOND = "💎"
     CASH = "💵"
-    BAIT = "<:2m:1542183289362845747>"
-    FISH_NUMBER = "<:39:1541129020635086968>"
+    BAIT = "🪱"
+    FISH_NUMBER = "🐟"
 
 
 RANK_TIERS = [
@@ -118,7 +119,9 @@ BAITS: dict[str, Bait] = {b.key: b for b in BAIT_SHOP}
 # ---------------------------------------------------------------------------
 CAST_COOLDOWN_SECONDS = 12       # thời gian hồi giữa 2 lần /câu_cá
 CLICK_COOLDOWN_SECONDS = 0.6      # chống spam nút "Kéo!"
-REEL_TIMEOUT_SECONDS = 45.0        # không thao tác -> cá bỏ đi
+REEL_TIMEOUT_SECONDS = 45.0        # không thao tác quá lâu -> hết hạn cứng, dừng ván
+IDLE_TENSION_PER_SECOND = 3.0      # % độ căng dây tăng thêm mỗi giây KHÔNG bấm "Kéo!"
+IDLE_TICK_SECONDS = 1.0            # tần suất kiểm tra/tăng tension khi đứng yên
 
 
 def roll_fish(rod: Rod) -> FishSpecies:
@@ -265,10 +268,54 @@ class ReelView(discord.ui.LayoutView):
         self.tension_max = 100.0  # % — quy về 0-100 cho dễ hiển thị, tương ứng độ dài dây câu tối đa của cần
         self.tension = 0.0
         self.last_click = 0.0
+        self.last_action_at = time.time()  # mốc để tính tension tự tăng khi đứng yên
         self.finished = False
         self.message: Optional[discord.Message] = None
+        self._lock = asyncio.Lock()  # chặn _on_pull và _idle_tick edit chồng lên nhau
 
         self._render()
+        self._idle_tick.start()
+
+    # -- vòng lặp tension tự tăng khi không bấm "Kéo!" ------------------
+    @tasks.loop(seconds=IDLE_TICK_SECONDS)
+    async def _idle_tick(self) -> None:
+        # message chỉ được gán SAU khi followup.send() xong (sau __init__),
+        # nên vài tick đầu tiên có thể chưa có -> bỏ qua, đợi tick sau.
+        if self.finished or self.message is None:
+            return
+        if self._lock.locked():
+            return  # đang có 1 lần bấm "Kéo!" xử lý dở, đợi tick sau để tránh edit chồng
+
+        async with self._lock:
+            now = time.time()
+            idle_for = now - self.last_action_at
+            if idle_for < IDLE_TICK_SECONDS:
+                return  # vừa có thao tác gần đây, chưa cần cộng thêm
+
+            self.tension += IDLE_TENSION_PER_SECOND * idle_for
+            self.last_action_at = now
+
+            if self.tension >= self.tension_max:
+                self.finished = True
+                self._idle_tick.stop()
+                self.clear_items()
+                self.stop()
+                view, file = build_fail_view(
+                    self.member, self.rod, self.rank_label, self.rank_badge,
+                    reason="Bạn đứng câu quá lâu không kéo, dây căng hết cỡ rồi đứt phựt!",
+                )
+                try:
+                    await self.message.edit(view=view, attachments=[file])
+                except discord.HTTPException:
+                    pass
+                await self.on_finish(False)
+                return
+
+            self._render()
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
     # -- render -------------------------------------------------------
     def _render(self) -> None:
@@ -326,23 +373,32 @@ class ReelView(discord.ui.LayoutView):
             return
         self.last_click = now
 
-        dmg = self.rod.pull * random.uniform(0.9, 1.3) * (1 + self.luck_bonus * 0.5)
-        self.progress += dmg
+        async with self._lock:
+            if self.finished:  # có thể vừa bị idle_tick kết thúc trong lúc chờ lock
+                await interaction.response.defer()
+                return
 
-        tension_gain = 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4)
-        self.tension += max(1.0, tension_gain)
+            self.last_action_at = now  # có thao tác -> idle tick không cộng dồn từ mốc cũ
 
-        if self.progress >= self.target:
-            self.finished = True
-            await self._finish(interaction, success=True)
-            return
-        if self.tension >= self.tension_max:
-            self.finished = True
-            await self._finish(interaction, success=False)
-            return
+            dmg = self.rod.pull * random.uniform(0.9, 1.3) * (1 + self.luck_bonus * 0.5)
+            self.progress += dmg
 
-        self._render()
-        await interaction.response.edit_message(view=self)
+            tension_gain = 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4)
+            self.tension += max(1.0, tension_gain)
+
+            if self.progress >= self.target:
+                self.finished = True
+                self._idle_tick.stop()
+                await self._finish(interaction, success=True)
+                return
+            if self.tension >= self.tension_max:
+                self.finished = True
+                self._idle_tick.stop()
+                await self._finish(interaction, success=False)
+                return
+
+            self._render()
+            await interaction.response.edit_message(view=self)
 
     async def _finish(self, interaction: discord.Interaction, success: bool) -> None:
         self.clear_items()
@@ -360,21 +416,23 @@ class ReelView(discord.ui.LayoutView):
         await self.on_finish(success)
 
     async def on_timeout(self) -> None:
-        if self.finished:
-            return
-        self.finished = True
-        self.clear_items()
-        container = discord.ui.Container(accent_colour=discord.Colour.dark_grey())
-        container.add_item(discord.ui.TextDisplay(
-            f"💤 **{self.member.display_name}** đứng câu quá lâu, con cá đã tự bơi đi mất..."
-        ))
-        self.add_item(container)
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except discord.HTTPException:
-                pass
-        await self.on_finish(None)
+        async with self._lock:
+            if self.finished:
+                return
+            self.finished = True
+            self._idle_tick.stop()
+            self.clear_items()
+            container = discord.ui.Container(accent_colour=discord.Colour.dark_grey())
+            container.add_item(discord.ui.TextDisplay(
+                f"💤 **{self.member.display_name}** đứng câu quá lâu, con cá đã tự bơi đi mất..."
+            ))
+            self.add_item(container)
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except discord.HTTPException:
+                    pass
+            await self.on_finish(None)
 
 
 # ---------------------------------------------------------------------------
