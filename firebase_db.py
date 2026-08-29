@@ -29,6 +29,7 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
           exp: int                     # EXP hiện có (đã trừ phần dùng để lên cấp)
           energy: int                  # thể lực hiện có (thanh năng lượng riêng, hao theo lần bấm "Kéo!")
           energy_updated_at: float     # epoch giây lần cuối tính hồi thể lực (dùng để hồi lazy theo thời gian)
+          current_map: str | None      # key khu vực câu đang chọn (fish_data.MAPS) — None = câu tất cả khu vực
 
 Đổi DB_ROOT nếu bot đã có sẵn nhánh khác.
 """
@@ -94,6 +95,7 @@ def _default_data() -> dict:
         # sẽ thấy energy đã đầy (>= max) và chỉ cập nhật lại mốc thời gian, an toàn.
         "energy": 500,
         "energy_updated_at": 0.0,
+        "current_map": None,
     }
 
 
