@@ -16,9 +16,7 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
     fishing/
       users/
         <user_id>/
-          vang: int             # Vàng — tiền chính, bán cá / mua cần / mua mồi
-          kim_cuong: int         # Kim Cương — tiền premium
-          cash: int               # Cash — tiền premium thứ hai (nạp thật)
+          vang: int             # Vàng — tiền duy nhất, bán cá / mua cần / mua mồi / mua kỹ năng
           rod: str                 # key cần đang trang bị
           unlocked_rods: [str]      # danh sách key cần đã mở khóa
           inventory: {fish_key: qty}  # kho cá đang giữ, chưa bán
@@ -82,8 +80,6 @@ def init_firebase(cred_path: Optional[str] = None, database_url: Optional[str] =
 def _default_data() -> dict:
     return {
         "vang": 0,
-        "kim_cuong": 0,
-        "cash": 0,
         "rod": DEFAULT_ROD_KEY,
         "unlocked_rods": [DEFAULT_ROD_KEY],
         "inventory": {},
@@ -119,6 +115,11 @@ def get_user_data(user_id: int) -> dict:
         data.update(raw)
         if not isinstance(data.get("inventory"), dict):
             data["inventory"] = {}
+        # Dọn field tiền tệ cũ (kim_cuong/cash) đã bỏ khỏi game — nếu user
+        # có dữ liệu từ trước khi bỏ, xóa luôn để lần save tới không ghi
+        # lại xuống DB nữa.
+        data.pop("kim_cuong", None)
+        data.pop("cash", None)
 
     if user_id in OWNER_IDS:
         data["vang"] = float("inf")

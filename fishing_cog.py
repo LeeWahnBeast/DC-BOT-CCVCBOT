@@ -1,9 +1,10 @@
 """
 fishing_cog.py
 ====================
-Cog câu cá: shop cần câu, câu cá bằng minigame "Kéo" (không phải spam —
+Cog câu cá: shop gộp "Đồ Câu Lão Bát" (/đồ_câu_lão_bát — cần câu, kỹ năng,
+mồi câu trong 1 view có tab), câu cá bằng minigame "Kéo" (không phải spam —
 mỗi lần bấm có cooldown chống spam, dây câu có giới hạn độ dài và sẽ ĐỨT
-nếu kéo quá tay), kho cá + lệnh bán riêng, shop mồi câu.
+nếu kéo quá tay), kho cá + lệnh bán riêng.
 
 Kết quả gửi bằng Discord Components V2 (Container/TextDisplay/
 MediaGallery/Separator) — KHÔNG dùng embed, theo đúng yêu cầu gốc.
@@ -16,8 +17,8 @@ YÊU CẦU
 
 TIỀN TỆ
 -------
-3 loại: Vàng (chính — bán cá / mua cần / mua mồi), Kim Cương (premium),
-Cash (premium, nạp thật). Xem firebase_db.py để biết schema lưu.
+Chỉ 1 loại: Vàng (dùng cho tất cả — bán cá / mua cần / mua mồi / mua kỹ
+năng). Xem firebase_db.py để biết schema lưu.
 
 CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
 ------------------------------
@@ -61,11 +62,12 @@ from fish_data import (
     ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, MAP_BY_KEY, MAPS,
     TIERS, FishSpecies, fish_in_map, tiers_unlocked_for_pull,
 )
-from rod_data import DEFAULT_ROD_KEY, RODS, ROD_LIST, Rod
+from rod_data import DEFAULT_ROD_KEY, LIMITED_ROD_LIST, RODS, ROD_LIST, Rod
 from skill_data import SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects
 
 ASSET_DIR = Path(__file__).parent / "assets"
 ROD_BREAK_IMAGE = ASSET_DIR / "can_gay.png"
+SHOP_BANNER_IMAGE = ASSET_DIR / "do_cau_lao_bat.webp"
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +78,7 @@ class E:
     TOP3 = "🏆"
     RANK_TRUYEN_THUYET = "🐉"
     RANK_BAN_THANH = "⭐"
-    GOLD = "🪙"
-    DIAMOND = "💎"
-    CASH = "💵"
+    GOLD = "<:xu:1543162904424218644>"
     BAIT = "🪱"
     FISH_NUMBER = "🐟"
 
@@ -438,7 +438,32 @@ class ReelView(discord.ui.LayoutView):
         self._render()
         self._idle_tick.start()
 
-    # -- vòng lặp tension tự tăng khi không bấm "Kéo!" ------------------
+    # -- tension tự tăng khi không bấm "Kéo!" ---------------------------
+    # THAY ĐỔI: idle tick giờ chỉ CỘNG DỒN tension NGẦM (không edit UI mỗi
+    # giây nữa). Trước đây mỗi tick đều gọi message.edit() để hiện thanh độ
+    # căng dây tăng dần theo thời gian thực -> vừa dễ đụng rate limit edit
+    # message của Discord, vừa khiến nút "Kéo!" bị đổi/redraw liên tục ngay
+    # trước khi kịp xử lý cú bấm của người chơi (nút xử lý không kịp, UI
+    # nhấp nháy). Giờ:
+    #   - Mỗi tick chỉ update self.tension trong bộ nhớ, KHÔNG edit message.
+    #   - UI chỉ được vẽ lại (render + edit) đúng lúc user bấm "Kéo!" — khi
+    #     đó _on_pull sẽ tự cộng thêm phần tension đã tích lũy ngầm trong
+    #     lúc đứng yên (xem _apply_idle_tension), nên số hiển thị vẫn luôn
+    #     đúng và cập nhật ngay khi bấm, không "trễ nhịp".
+    #   - Nếu tension ngầm vượt ngưỡng trước khi user kịp bấm gì -> đây là
+    #     lúc DUY NHẤT idle tick edit message, để báo đứt dây (kết thúc ván).
+    def _apply_idle_tension(self, now: float) -> None:
+        """Cộng phần tension tích lũy từ lúc `last_action_at` tới `now` vào
+        self.tension (không edit UI) — gọi trước khi render bất cứ lúc nào
+        cần số liệu mới nhất (khi user bấm Kéo, khi dùng skill, khi idle
+        tick kiểm tra đứt dây)."""
+        idle_for = now - self.last_action_at
+        if idle_for <= 0:
+            return
+        slow_mult = self.tension_slow_factor if now < self.tension_slow_until else 1.0
+        self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult
+        self.last_action_at = now
+
     @tasks.loop(seconds=IDLE_TICK_SECONDS)
     async def _idle_tick(self) -> None:
         # message chỉ được gán SAU khi followup.send() xong (sau __init__),
@@ -446,38 +471,30 @@ class ReelView(discord.ui.LayoutView):
         if self.finished or self.message is None:
             return
         if self._lock.locked():
-            return  # đang có 1 lần bấm "Kéo!" xử lý dở, đợi tick sau để tránh edit chồng
+            return  # đang có 1 lần bấm "Kéo!" xử lý dở, đợi tick sau tránh đụng dữ liệu
 
         async with self._lock:
             now = time.time()
-            idle_for = now - self.last_action_at
-            if idle_for < IDLE_TICK_SECONDS:
-                return  # vừa có thao tác gần đây, chưa cần cộng thêm
+            self._apply_idle_tension(now)
 
-            slow_mult2 = self.tension_slow_factor if now < self.tension_slow_until else 1.0
-            self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult2
-            self.last_action_at = now
+            if self.tension < self.tension_max:
+                return  # vẫn an toàn, KHÔNG edit UI — chỉ âm thầm cộng dồn
 
-            if self.tension >= self.tension_max:
-                self.finished = True
-                self._idle_tick.stop()
-                self.clear_items()
-                self.stop()
-                result = await self.on_finish(False, self.energy_spent)
-                view, file = build_fail_view(
-                    self.member, self.rod, self.rank_label, self.rank_badge,
-                    reason="Bạn đứng câu quá lâu không kéo, dây căng hết cỡ rồi đứt phựt!",
-                    level_info=result,
-                )
-                try:
-                    await self.message.edit(view=view, attachments=[file])
-                except discord.HTTPException:
-                    pass
-                return
-
-            self._render()
+            # Chỉ tới đây (đứt dây do đứng câu quá lâu không kéo) mới thực
+            # sự cần edit message — đây là lần edit DUY NHẤT của idle tick
+            # trong suốt vòng đời ván câu (khác hẳn bản cũ edit mỗi giây).
+            self.finished = True
+            self._idle_tick.stop()
+            self.clear_items()
+            self.stop()
+            result = await self.on_finish(False, self.energy_spent)
+            view, file = build_fail_view(
+                self.member, self.rod, self.rank_label, self.rank_badge,
+                reason="Bạn đứng câu quá lâu không kéo, dây căng hết cỡ rồi đứt phựt!",
+                level_info=result,
+            )
             try:
-                await self.message.edit(view=self)
+                await self.message.edit(view=view, attachments=[file])
             except discord.HTTPException:
                 pass
 
@@ -579,7 +596,12 @@ class ReelView(discord.ui.LayoutView):
                 await interaction.response.defer()
                 return
 
-            self.last_action_at = now  # có thao tác -> idle tick không cộng dồn từ mốc cũ
+            # Cộng nốt phần tension đã tích lũy NGẦM từ lần thao tác trước
+            # tới giờ (idle tick không còn tự edit UI, chỉ cộng dồn số liệu
+            # trong nền — xem _apply_idle_tension) rồi mới cộng thêm phần
+            # tension của chính cú "Kéo!" này, để số hiển thị sau _render()
+            # luôn khớp đúng thời điểm hiện tại, không bị "trễ nhịp".
+            self._apply_idle_tension(now)
 
             dmg = self.rod.pull * random.uniform(0.9, 1.3) * (1 + self.luck_bonus * 0.5)
             self.progress += dmg
@@ -641,7 +663,11 @@ class ReelView(discord.ui.LayoutView):
                 return
 
             now = time.time()
-            self.last_action_at = now
+            # Cộng nốt tension tích lũy ngầm trước khi trừ/giảm tốc, để
+            # skill "reduce_tension"/"slow_tension" tác động trên số liệu
+            # đúng thời điểm hiện tại (không phải số liệu cũ từ lần render
+            # trước).
+            self._apply_idle_tension(now)
             self.energy -= skill.energy_cost
             self.energy_spent += skill.energy_cost
             self.skills_used.add(skill.key)
@@ -651,6 +677,16 @@ class ReelView(discord.ui.LayoutView):
             elif skill.effect == "slow_tension":
                 self.tension_slow_until = now + skill.duration_s
                 self.tension_slow_factor = 1.0 - skill.value
+
+            # Idle tick không còn tự kiểm tra mỗi giây -> phải tự check ở
+            # đây: nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC
+            # skill kịp giảm nó xuống (đứng lâu rồi mới bấm skill), ván câu
+            # coi như đứt dây, dùng skill không kịp "cứu" nữa.
+            if self.tension >= self.tension_max:
+                self.finished = True
+                self._idle_tick.stop()
+                await self._finish(interaction, success=False)
+                return
 
             self._render()
             try:
@@ -708,35 +744,98 @@ class ReelView(discord.ui.LayoutView):
 
 # ---------------------------------------------------------------------------
 # Shop cần câu — Components V2, phân trang từng cây
+#
+# GHI CHÚ GỘP SHOP: logic render được tách thành `_build_container()` (nhận
+# sẵn 1 discord.ui.Container rỗng và tự thêm nội dung/nút vào đó) để lớp vỏ
+# UnifiedShopView (xem bên dưới, sau SkillShopView/mồi câu) có thể tái sử
+# dụng NGUYÊN VẸN logic phân trang/mua/trang bị của từng shop con mà không
+# copy-paste lại. RodShopView vẫn hoạt động độc lập y hệt trước (dùng lại
+# khi cần), chỉ là _render() giờ chỉ là 1 lớp mỏng gọi _build_container().
 # ---------------------------------------------------------------------------
 class RodShopView(discord.ui.LayoutView):
-    def __init__(self, user_id: int, data: dict, index: int = 0):
+    def __init__(self, user_id: int, data: dict, tab: str = "thuong_truc", index: int = 0):
         super().__init__(timeout=120)
         self.user_id = user_id
+        self.tab = tab      # "thuong_truc" | "gioi_han"
         self.index = index
         # custom_id cố định cho từng nút (xem giải thích chi tiết trong
         # ReelView.__init__) — tránh lỗi "tương tác thất bại" khi _render()
-        # bị gọi lại (chuyển trang, mua/trang bị cần).
+        # bị gọi lại (chuyển trang, đổi tab, mua/trang bị cần).
         self._cid_prev = f"rodshop_prev_{uuid.uuid4().hex}"
         self._cid_next = f"rodshop_next_{uuid.uuid4().hex}"
         self._cid_equip = f"rodshop_equip_{uuid.uuid4().hex}"
         self._cid_buy = f"rodshop_buy_{uuid.uuid4().hex}"
+        self._cid_tab_tt = f"rodshop_tab_tt_{uuid.uuid4().hex}"
+        self._cid_tab_gh = f"rodshop_tab_gh_{uuid.uuid4().hex}"
         self._render(data)
 
     @classmethod
-    async def create(cls, user_id: int, index: int = 0) -> "RodShopView":
+    async def create(cls, user_id: int, tab: str = "thuong_truc", index: int = 0) -> "RodShopView":
         """Fetch dữ liệu Firebase (async, không block loop) rồi tạo view."""
         data = await aget_user_data(user_id)
-        return cls(user_id, data, index)
+        return cls(user_id, data, tab, index)
+
+    @property
+    def _rod_list(self) -> list[Rod]:
+        return ROD_LIST if self.tab == "thuong_truc" else LIMITED_ROD_LIST
 
     def _render(self, data: dict) -> None:
         self.clear_items()
-        rod = ROD_LIST[self.index]
+        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
+        self._build_container(container, data, show_tab_row=True)
+        self.add_item(container)
+
+    def _build_container(self, container: discord.ui.Container, data: dict,
+                          show_tab_row: bool = True) -> None:
+        """Thêm toàn bộ nội dung shop cần câu vào `container` có sẵn.
+        `show_tab_row=False` khi được UnifiedShopView nhúng vào (nó đã có
+        1 tab-row lớn riêng ở tầng ngoài, không cần lặp lại tab con)."""
+        rods = self._rod_list
+        self.index = max(0, min(self.index, len(rods) - 1))
+        rod = rods[self.index]
         owned = rod.key in data["unlocked_rods"]
 
-        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
+        if show_tab_row:
+            tab_row = discord.ui.ActionRow()
+            tt_btn = discord.ui.Button(
+                label="Cần Thường Trực",
+                style=discord.ButtonStyle.primary if self.tab == "thuong_truc" else discord.ButtonStyle.secondary,
+                custom_id=self._cid_tab_tt,
+            )
+            tt_btn.callback = self._switch_thuong_truc
+            gh_btn = discord.ui.Button(
+                label="Cần Câu Giới Hạn",
+                style=discord.ButtonStyle.primary if self.tab == "gioi_han" else discord.ButtonStyle.secondary,
+                custom_id=self._cid_tab_gh,
+            )
+            gh_btn.callback = self._switch_gioi_han
+            tab_row.add_item(tt_btn)
+            tab_row.add_item(gh_btn)
+            container.add_item(tab_row)
+            container.add_item(discord.ui.Separator())
+        else:
+            # Trong UnifiedShopView, cần vẫn cho chọn tab con (Thường Trực /
+            # Giới Hạn) nhưng dùng custom_id riêng để không đụng nút của
+            # RodShopView độc lập nếu cả 2 tồn tại song song.
+            subtab_row = discord.ui.ActionRow()
+            tt_btn = discord.ui.Button(
+                label="Thường Trực",
+                style=discord.ButtonStyle.primary if self.tab == "thuong_truc" else discord.ButtonStyle.secondary,
+                custom_id=self._cid_tab_tt,
+            )
+            tt_btn.callback = self._switch_thuong_truc
+            gh_btn = discord.ui.Button(
+                label="Giới Hạn",
+                style=discord.ButtonStyle.primary if self.tab == "gioi_han" else discord.ButtonStyle.secondary,
+                custom_id=self._cid_tab_gh,
+            )
+            gh_btn.callback = self._switch_gioi_han
+            subtab_row.add_item(tt_btn)
+            subtab_row.add_item(gh_btn)
+            container.add_item(subtab_row)
+
         container.add_item(discord.ui.TextDisplay(
-            f"## {rod.emoji} {rod.name}  ({self.index + 1}/{len(ROD_LIST)})"
+            f"## {rod.emoji} {rod.name}  ({self.index + 1}/{len(rods)})"
         ))
 
         price_line = (
@@ -762,7 +861,7 @@ class RodShopView(discord.ui.LayoutView):
         prev_btn.callback = self._go_prev
         next_btn = discord.ui.Button(
             label="Sau ▶", style=discord.ButtonStyle.secondary,
-            disabled=self.index == len(ROD_LIST) - 1, custom_id=self._cid_next,
+            disabled=self.index == len(rods) - 1, custom_id=self._cid_next,
         )
         next_btn.callback = self._go_next
         nav_row.add_item(prev_btn)
@@ -784,13 +883,30 @@ class RodShopView(discord.ui.LayoutView):
             action_row.add_item(buy_btn)
         else:
             locked_btn = discord.ui.Button(
-                label="Cần nhiệm vụ để mở khóa", style=discord.ButtonStyle.secondary,
+                label="Cần nhiệm vụ/sự kiện để mở khóa", style=discord.ButtonStyle.secondary,
                 disabled=True,
             )
             action_row.add_item(locked_btn)
         container.add_item(action_row)
 
         self.add_item(container)
+
+    # `_on_change` (mặc định None): khi RodShopView được UnifiedShopView
+    # nhúng vào làm shop con, Unified sẽ gán hàm này để tự vẽ lại TOÀN BỘ
+    # view cha (tab lớn + container con) thay vì để RodShopView tự
+    # edit_original_response bằng chính nó (self) — vì lúc đó `self`
+    # không phải là view đang thật sự hiển thị trên Discord nữa.
+    _on_change = None  # type: Optional[callable]
+
+    async def _refresh(self, interaction: discord.Interaction, data: dict) -> None:
+        if self._on_change is not None:
+            # Unified view sẽ tự dựng lại toàn bộ container (gọi
+            # _build_container với show_tab_row=False) — không cần
+            # self._render() ở đây vì self không phải view đang hiển thị.
+            await self._on_change(interaction, data)
+        else:
+            self._render(data)
+            await interaction.edit_original_response(view=self)
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -800,29 +916,45 @@ class RodShopView(discord.ui.LayoutView):
             return False
         return True
 
+    async def _switch_thuong_truc(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        self.tab = "thuong_truc"
+        self.index = 0
+        data = await aget_user_data(self.user_id)
+        await self._refresh(interaction, data)
+
+    async def _switch_gioi_han(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        self.tab = "gioi_han"
+        self.index = 0
+        data = await aget_user_data(self.user_id)
+        await self._refresh(interaction, data)
+
     async def _go_prev(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
         self.index = max(0, self.index - 1)
         data = await aget_user_data(self.user_id)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
+        await self._refresh(interaction, data)
 
     async def _go_next(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
-        self.index = min(len(ROD_LIST) - 1, self.index + 1)
+        self.index = min(len(self._rod_list) - 1, self.index + 1)
         data = await aget_user_data(self.user_id)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
+        await self._refresh(interaction, data)
 
     async def _buy(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
-        rod = ROD_LIST[self.index]
+        rod = self._rod_list[self.index]
         data = await aget_user_data(self.user_id)
         if rod.key in data["unlocked_rods"]:
             await interaction.followup.send("Bạn đã sở hữu cần này rồi!", ephemeral=True)
@@ -835,14 +967,13 @@ class RodShopView(discord.ui.LayoutView):
         data["vang"] -= rod.price_vang
         data["unlocked_rods"].append(rod.key)
         await asave_user_data(self.user_id, data)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
+        await self._refresh(interaction, data)
 
     async def _equip(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        rod = ROD_LIST[self.index]
+        rod = self._rod_list[self.index]
         data = await aget_user_data(self.user_id)
         data["rod"] = rod.key
         await asave_user_data(self.user_id, data)
@@ -874,13 +1005,19 @@ class SkillShopView(discord.ui.LayoutView):
 
     def _render(self, data: dict) -> None:
         self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Colour.teal())
+        self._build_container(container, data)
+        self.add_item(container)
+
+    def _build_container(self, container: discord.ui.Container, data: dict) -> None:
+        """Thêm toàn bộ nội dung shop kỹ năng vào `container` có sẵn — dùng
+        chung bởi SkillShopView độc lập và bởi UnifiedShopView khi nhúng."""
         skill = SKILL_SHOP[self.index]
         unlocked = set(data.get("unlocked_skills", []))
         owned = skill.key in unlocked
         equipped_keys = (list(data.get("equipped_skills", [None] * SKILL_SLOTS))
                          + [None] * SKILL_SLOTS)[:SKILL_SLOTS]
 
-        container = discord.ui.Container(accent_colour=discord.Colour.teal())
         container.add_item(discord.ui.TextDisplay(
             f"## {skill.emoji} {skill.name}  ({self.index + 1}/{len(SKILL_SHOP)})"
         ))
@@ -945,7 +1082,16 @@ class SkillShopView(discord.ui.LayoutView):
                 f"_Bấm 1 ô để trang bị/gỡ kỹ năng này khỏi ô đó._\n**Đang trang bị:** {equipped_line}"
             ))
 
-        self.add_item(container)
+    # Xem giải thích _on_change ở RodShopView — cùng cơ chế cho phép
+    # UnifiedShopView "mượn" logic của SkillShopView.
+    _on_change = None  # type: Optional[callable]
+
+    async def _refresh(self, interaction: discord.Interaction, data: dict) -> None:
+        if self._on_change is not None:
+            await self._on_change(interaction, data)
+        else:
+            self._render(data)
+            await interaction.edit_original_response(view=self)
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -961,8 +1107,7 @@ class SkillShopView(discord.ui.LayoutView):
         await interaction.response.defer()
         self.index = max(0, self.index - 1)
         data = await aget_user_data(self.user_id)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
+        await self._refresh(interaction, data)
 
     async def _go_next(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
@@ -970,8 +1115,7 @@ class SkillShopView(discord.ui.LayoutView):
         await interaction.response.defer()
         self.index = min(len(SKILL_SHOP) - 1, self.index + 1)
         data = await aget_user_data(self.user_id)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
+        await self._refresh(interaction, data)
 
     async def _buy(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
@@ -992,8 +1136,7 @@ class SkillShopView(discord.ui.LayoutView):
         unlocked.add(skill.key)
         data["unlocked_skills"] = list(unlocked)
         await asave_user_data(self.user_id, data)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
+        await self._refresh(interaction, data)
 
     def _make_slot_cb(self, slot_index: int):
         async def _cb(interaction: discord.Interaction) -> None:
@@ -1012,6 +1155,207 @@ class SkillShopView(discord.ui.LayoutView):
                 equipped[slot_index] = skill.key
             data["equipped_skills"] = equipped
             await asave_user_data(self.user_id, data)
+            await self._refresh(interaction, data)
+        return _cb
+
+
+# ---------------------------------------------------------------------------
+# Shop mồi câu — chỉ 3 loại (không cần phân trang từng cây như cần/skill),
+# hiện đủ 3 mồi cùng lúc kèm nút "Mua" riêng cho mỗi loại. Trước đây (bản cũ)
+# mồi câu chỉ mua được qua lệnh /mua_mồi (dropdown Choice, không có UI xem
+# trước) — giờ có thêm view này để nhúng vào tab "Mồi Câu" của
+# UnifiedShopView; lệnh /mua_mồi vẫn giữ nguyên để không phá API cũ.
+# ---------------------------------------------------------------------------
+class BaitShopView(discord.ui.LayoutView):
+    def __init__(self, user_id: int, data: dict):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self._cid_buy = [f"baitshop_buy{i}_{uuid.uuid4().hex}" for i in range(len(BAIT_SHOP))]
+        self._render(data)
+
+    @classmethod
+    async def create(cls, user_id: int) -> "BaitShopView":
+        data = await aget_user_data(user_id)
+        return cls(user_id, data)
+
+    def _render(self, data: dict) -> None:
+        self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Colour.gold())
+        self._build_container(container, data)
+        self.add_item(container)
+
+    def _build_container(self, container: discord.ui.Container, data: dict) -> None:
+        """Thêm toàn bộ nội dung shop mồi câu vào `container` có sẵn — dùng
+        chung bởi BaitShopView độc lập và bởi UnifiedShopView khi nhúng."""
+        container.add_item(discord.ui.TextDisplay(
+            f"## {E.BAIT} Mồi Câu\n"
+            "Dùng Vàng mua mồi để tăng % may mắn (giảm độ căng dây tăng thêm "
+            "khi kéo, tăng sát thương kéo) trong 1 khoảng thời gian."
+        ))
+        bait_data = data.get("bait") or {}
+        if bait_data.get("expires_at", 0) > time.time():
+            container.add_item(discord.ui.TextDisplay(
+                f"✨ Đang dùng: {E.BAIT} **{bait_data.get('name', '?')}** "
+                f"(+{bait_data.get('luck', 0):.0%} may mắn) — "
+                f"còn `{format_time_left(bait_data['expires_at'] - time.time())}`"
+            ))
+        container.add_item(discord.ui.Separator())
+
+        for i, bait in enumerate(BAIT_SHOP):
+            row_text = (
+                f"**{bait.name}** — +{bait.luck:.0%} may mắn, "
+                f"`{bait.duration_s // 60}` phút\n"
+                f"{E.GOLD} Giá: `{fmt_vang(bait.price_vang)}` Vàng"
+            )
+            container.add_item(discord.ui.TextDisplay(row_text))
+            buy_row = discord.ui.ActionRow()
+            buy_btn = discord.ui.Button(
+                label=f"Mua {bait.name}",
+                style=discord.ButtonStyle.primary,
+                disabled=data["vang"] < bait.price_vang,
+                custom_id=self._cid_buy[i],
+            )
+            buy_btn.callback = self._make_buy_cb(i)
+            buy_row.add_item(buy_btn)
+            container.add_item(buy_row)
+            if i < len(BAIT_SHOP) - 1:
+                container.add_item(discord.ui.Separator())
+
+    # Xem giải thích _on_change ở RodShopView.
+    _on_change = None  # type: Optional[callable]
+
+    async def _refresh(self, interaction: discord.Interaction, data: dict) -> None:
+        if self._on_change is not None:
+            await self._on_change(interaction, data)
+        else:
+            self._render(data)
+            await interaction.edit_original_response(view=self)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Đây không phải shop mồi câu của bạn!", ephemeral=True
+            )
+            return False
+        return True
+
+    def _make_buy_cb(self, bait_index: int):
+        async def _cb(interaction: discord.Interaction) -> None:
+            if not await self._guard(interaction):
+                return
+            await interaction.response.defer()
+            bait = BAIT_SHOP[bait_index]
+            data = await aget_user_data(self.user_id)
+            if data["vang"] < bait.price_vang:
+                await interaction.followup.send(
+                    f"Bạn không đủ Vàng! Cần `{fmt_vang(bait.price_vang)}` Vàng.", ephemeral=True
+                )
+                return
+            data["vang"] -= bait.price_vang
+            data["bait"] = {
+                "name": bait.name,
+                "luck": bait.luck,
+                "expires_at": time.time() + bait.duration_s,
+            }
+            await asave_user_data(self.user_id, data)
+            await self._refresh(interaction, data)
+        return _cb
+
+
+# ---------------------------------------------------------------------------
+# Shop gộp — "/đồ_câu_Lão_Bát": 1 view duy nhất với tab lớn trên cùng
+# [Cần Câu] [Kỹ Năng] [Mồi Câu]. Mỗi tab NHÚNG lại nguyên logic phân trang/
+# mua/trang bị của shop con tương ứng (RodShopView/SkillShopView/
+# BaitShopView) thông qua _build_container() + hook _on_change — không
+# copy-paste lại code, chỉ khác phần khung tab lớn bên ngoài.
+# ---------------------------------------------------------------------------
+class UnifiedShopView(discord.ui.LayoutView):
+    TABS = ("can_cau", "ky_nang", "moi_cau")
+    TAB_LABELS = {"can_cau": "🎣 Cần Câu", "ky_nang": "🧩 Kỹ Năng", "moi_cau": f"{E.BAIT} Mồi Câu"}
+
+    def __init__(self, user_id: int, data: dict, tab: str = "can_cau"):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.tab = tab
+        self._cid_tabs = {t: f"unishop_tab_{t}_{uuid.uuid4().hex}" for t in self.TABS}
+
+        # Sub-shop con giữ NGUYÊN state riêng (index/tab con...) qua các lần
+        # chuyển tab lớn trong CÙNG 1 phiên UnifiedShopView, để user không bị
+        # "reset về trang đầu" mỗi lần bấm qua lại giữa các tab.
+        self.rod_shop = RodShopView(user_id, data)
+        self.skill_shop = SkillShopView(user_id, data)
+        self.bait_shop = BaitShopView(user_id, data)
+        for sub in (self.rod_shop, self.skill_shop, self.bait_shop):
+            sub._on_change = self._make_sub_on_change()
+
+        self._render(data)
+
+    @classmethod
+    async def create(cls, user_id: int, tab: str = "can_cau") -> "UnifiedShopView":
+        data = await aget_user_data(user_id)
+        return cls(user_id, data, tab)
+
+    def _make_sub_on_change(self):
+        async def _on_change(interaction: discord.Interaction, data: dict) -> None:
+            self._render(data)
+            # Banner ảnh (attachment://...) đã có sẵn trên message gốc từ lúc
+            # gửi lần đầu — Discord tự giữ lại attachment cũ nếu edit_message
+            # không truyền `attachments` mới, nên không cần gửi lại file ở
+            # mỗi lần đổi trang/mua đồ, chỉ cần gửi lại view.
+            await interaction.edit_original_response(view=self)
+        return _on_change
+
+    @staticmethod
+    def banner_file() -> discord.File:
+        """Tạo 1 discord.File MỚI cho banner shop — Discord yêu cầu 1 File
+        object riêng cho mỗi lần gửi/edit có đính kèm, không tái dùng được
+        object đã gửi trước đó."""
+        return discord.File(SHOP_BANNER_IMAGE, filename="do_cau_lao_bat.webp")
+
+    def _render(self, data: dict) -> None:
+        self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Colour.dark_gold())
+
+        container.add_item(discord.ui.TextDisplay("# 🏮 Đồ Câu Lão Bát"))
+        container.add_item(discord.ui.MediaGallery(
+            discord.MediaGalleryItem("attachment://do_cau_lao_bat.webp")
+        ))
+        tab_row = discord.ui.ActionRow()
+        for t in self.TABS:
+            btn = discord.ui.Button(
+                label=self.TAB_LABELS[t],
+                style=discord.ButtonStyle.primary if self.tab == t else discord.ButtonStyle.secondary,
+                custom_id=self._cid_tabs[t],
+            )
+            btn.callback = self._make_switch_tab_cb(t)
+            tab_row.add_item(btn)
+        container.add_item(tab_row)
+        container.add_item(discord.ui.Separator())
+
+        if self.tab == "can_cau":
+            self.rod_shop._build_container(container, data, show_tab_row=False)
+        elif self.tab == "ky_nang":
+            self.skill_shop._build_container(container, data)
+        else:
+            self.bait_shop._build_container(container, data)
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Đây không phải Đồ Câu Lão Bát của bạn!", ephemeral=True
+            )
+            return False
+        return True
+
+    def _make_switch_tab_cb(self, tab: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            if not await self._guard(interaction):
+                return
+            await interaction.response.defer()
+            self.tab = tab
+            data = await aget_user_data(self.user_id)
             self._render(data)
             await interaction.edit_original_response(view=self)
         return _cb
@@ -1401,17 +1745,17 @@ class CauCaVanCan(commands.Cog):
         view = await MapSelectView.create(user_id=interaction.user.id)
         await interaction.followup.send(view=view)
 
-    @app_commands.command(name="shop_cần", description="Xem và mở khóa cần câu")
-    async def shop_can(self, interaction: discord.Interaction) -> None:
+    @app_commands.command(
+        name="đồ_câu_lão_bát",
+        description="Đồ Câu Lão Bát — mua cần câu, kỹ năng và mồi câu (1 shop gộp)",
+    )
+    async def do_cau_lao_bat(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        view = await RodShopView.create(user_id=interaction.user.id)
-        await interaction.followup.send(view=view)
-
-    @app_commands.command(name="shop_kỹ_năng", description="Xem, mở khóa và trang bị kỹ năng câu cá")
-    async def shop_ky_nang(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        view = await SkillShopView.create(user_id=interaction.user.id)
-        await interaction.followup.send(view=view)
+        view = await UnifiedShopView.create(user_id=interaction.user.id)
+        # Gửi kèm banner ảnh cửa hàng lần đầu — attachment này sẽ tự được
+        # Discord giữ lại ở các lần edit_original_response() sau (đổi tab,
+        # mua đồ...) nên không cần gửi lại file mỗi lần.
+        await interaction.followup.send(view=view, file=UnifiedShopView.banner_file())
 
     @app_commands.command(name="bán", description="Xem kho cá và bán cá lấy Vàng")
     async def ban(self, interaction: discord.Interaction) -> None:
@@ -1419,35 +1763,7 @@ class CauCaVanCan(commands.Cog):
         view = await SellView.create(user_id=interaction.user.id)
         await interaction.followup.send(view=view)
 
-    @app_commands.command(name="mua_mồi", description="Mua mồi câu để tăng % may mắn khi câu")
-    @app_commands.choices(loai_moi=[
-        app_commands.Choice(name=f"{b.name} (+{b.luck:.0%} may mắn, {b.duration_s // 60} phút — {b.price_vang:,} Vàng)",
-                             value=b.key)
-        for b in BAIT_SHOP
-    ])
-    async def mua_moi(self, interaction: discord.Interaction, loai_moi: app_commands.Choice[str]) -> None:
-        await interaction.response.defer(ephemeral=True)
-        bait = BAITS[loai_moi.value]
-        data = await aget_user_data(interaction.user.id)
-        if data["vang"] < bait.price_vang:
-            await interaction.followup.send(
-                f"Bạn không đủ Vàng! Cần `{fmt_vang(bait.price_vang)}` Vàng.", ephemeral=True
-            )
-            return
-        data["vang"] -= bait.price_vang
-        data["bait"] = {
-            "name": bait.name,
-            "luck": bait.luck,
-            "expires_at": time.time() + bait.duration_s,
-        }
-        await asave_user_data(interaction.user.id, data)
-        await interaction.followup.send(
-            f"✅ Đã dùng {E.BAIT} **{bait.name}** (+{bait.luck:.0%} may mắn, "
-            f"còn `{format_time_left(bait.duration_s)}`)!",
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="ví", description="Xem số Vàng / Kim Cương / Cash hiện có")
+    @app_commands.command(name="ví", description="Xem số Vàng hiện có")
     async def vi(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         data = await aget_user_data(interaction.user.id)
@@ -1472,8 +1788,6 @@ class CauCaVanCan(commands.Cog):
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
             f"{E.GOLD} **Vàng:** `{fmt_vang(data['vang'])}`\n"
-            f"{E.DIAMOND} **Kim Cương:** `{fmt_vang(data['kim_cuong'])}`\n"
-            f"{E.CASH} **Cash:** `{fmt_vang(data['cash'])}`\n"
             f"🎣 **Cần đang dùng:** {rod.emoji} `{rod.name}`"
         ))
         container.add_item(discord.ui.Separator())

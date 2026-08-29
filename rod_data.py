@@ -7,8 +7,12 @@ tự sức mạnh tăng dần (dựa trên "Sát thương/giây" + "Lực kéo")
 
 GHI CHÚ
 -------
-- Tab thứ hai "Cần Câu Giới Hạn" (limited-time rods) chưa có ảnh nên chưa
-  đưa vào — thêm sau khi có dữ liệu.
+- Tab thứ hai "Cần Câu Giới Hạn" (limited-time rods, xem LIMITED_ROD_LIST)
+  lấy từ 3 ảnh chụp shop cần câu — toàn bộ đều KHÔNG bán trực tiếp bằng
+  Vàng (price_vang=None), chỉ nhận qua sự kiện/lễ/thẻ như "Cách Nhận" ghi
+  trong ảnh, nên chỉ hiển thị xem thông tin trong shop, không có nút mua.
+  1 cây (Thép Gân Châu) bị ảnh cắt mất chỉ số/hiệu ứng nên CHƯA thêm —
+  điền sau khi có ảnh đầy đủ.
 - 4 cây đầu (Cần câu người yêu cũ tặng, Thép Gân, Thép Gân Điêu Tàng,
   Thép Gân Tam Hợp, Cần Máy Ngang) trong ảnh gốc không hiện giá Vàng cụ
   thể (nút chỉ hiện "Trang Bị" / "Đã trang bị" — tức đã sở hữu sẵn / cần
@@ -99,3 +103,59 @@ ROD_LIST: list[Rod] = [
 
 RODS: dict[str, Rod] = {r.key: r for r in ROD_LIST}
 DEFAULT_ROD_KEY = "nguoi_yeu_cu"
+
+
+# ---------------------------------------------------------------------------
+# Cần Câu Giới Hạn (tab riêng trong shop) — toàn bộ nhận qua sự kiện/lễ/thẻ,
+# KHÔNG bán trực tiếp bằng Vàng (price_vang=None với mọi cây trong danh
+# sách này). "Cách Nhận" giữ đúng chữ hiển thị trong ảnh gốc.
+# ---------------------------------------------------------------------------
+LIMITED_ROD_LIST: list[Rod] = [
+    Rod("gh_can_phao_hoa", "Cần Pháo Hoa", "🎆", 50_000, 800, 60,
+        "Cháy: Nhận 66% cộng thêm Sát Thương Câu, chỉ kéo dài 20 giây",
+        "Nhận từ Sự Kiện Tết Dương Lịch"),
+    Rod("gh_can_ca_kiem", "Cần Cá Kiếm", "⚔️", 50_000, 900, 70,
+        "Thần Tốc: Giảm thời gian hồi chiêu điệu 30%",
+        "Nhận từ Lễ 5 Triệu"),
+    Rod("gh_thep_gan_huyet_sac", "Thép Gân Huyết Sắc", "🩸", 65_000, 1_200, 40,
+        "Tăng 80% Sát Thương Câu một đoạn",
+        "Nhận từ Lễ 6 Triệu"),
+    Rod("gh_tu_dien_than_can", "Tử Điện Thần Cần", "🟣", 50_000, 1_000, 80,
+        "Nhận 50% cộng sát thương câu, giảm 20% thời gian hồi chiêu điệu, "
+        "giảm 30% tiêu hao thể lực câu",
+        "Cần Thẻ Cá Đợt 1"),
+    Rod("gh_lai_tai_can", "Lai Tài Cần", "🧧", 70_000, 1_200, 100,
+        "Nhận 30% cộng sát thương câu, giảm 30% thời gian hồi chiêu điệu, "
+        "20% tỷ lệ nhận cá gấp đôi",
+        "Nhận từ Lễ 7 Triệu"),
+    Rod("gh_thep_gan_lap_lanh", "Thép Gân Lấp Lánh", "✨", 3_000, 60, 3,
+        "Nhận cộng dây câu, Khống Cá và sát thương tăng theo cấp cường hóa "
+        "(cơ bản +7.200 sát thương/giây, +144 lực kéo, +7,2 độ dài dây câu)",
+        "Nhận từ Lễ 20 Vạn"),
+    Rod("gh_can_xuong_vang", "Cần Xương Vàng", "🦴", 40_000, 600, 50,
+        "Mỗi đòn +8.000 sát thương, 1% nhận 50 vạn Vàng",
+        "Nhận từ Triệu Lễ"),
+    Rod("gh_can_an_long", "Cần Ẩn Long", "🐲", 35_000, 600, 60,
+        "Nhận 25% cộng thêm Sát Thương Câu, 50% tỷ lệ miễn nhiễm tấn công của cá",
+        "Nhận từ Lễ 2 Triệu"),
+    Rod("gh_can_keo_giang_sinh", "Cần Kẹo Giáng Sinh", "🎄", 45_000, 1_200, 70,
+        "Nhận 20% cộng thêm Sát Thương Câu, trong thời gian Thu Dây có 5% tỷ lệ "
+        "buộc kéo cá một đoạn",
+        "Nhận từ Sự Kiện Giáng Sinh"),
+    Rod("gh_can_tuong_van", "Cần Tường Vận", "🍀", 80_000, 1_000, 80,
+        "Nhận 50% Cộng Điệu Câu, Điệu Câu có 20% tỷ lệ bạo kích, 20% tỷ lệ "
+        "đặt lại hồi chiêu",
+        "Nhận từ Sự Kiện Tết"),
+    Rod("gh_can_ma_thuong_huu_ngu", "Cần Mã Thượng Hữu Ngư", "🐎", 88_888, 888, 88,
+        "Nhận 88% Cộng câu, Quăng cần là câu được cá lớn ngay!",
+        "Nhận từ Sự Kiện Tết"),
+    Rod("gh_truc_van_nien", "Trúc Vạn Niên", "🐼", 88_888, 888, 88,
+        "Nhận (20 + số phúc lợi đã nhận) x 3 cộng sát thương (hiện tại: 23%)",
+        "Kỷ Niệm Gấu Trúc Độc Quyền"),
+]
+
+LIMITED_RODS: dict[str, Rod] = {r.key: r for r in LIMITED_ROD_LIST}
+
+# RODS gộp cả 2 tab để tra cứu theo key (equip/lookup không cần biết cần
+# đang ở tab nào) — dùng ở fishing_cog.py khi đọc data["rod"].
+RODS.update(LIMITED_RODS)
