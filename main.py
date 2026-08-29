@@ -12,6 +12,7 @@ import discord
 from discord.ext import commands
 
 from keep_alive import keep_alive
+from firebase_db import init_firebase
 
 TOKEN = os.environ["DISCORD_TOKEN"]
 GUILD_ID = os.environ.get("GUILD_ID")  # tùy chọn, để sync slash command nhanh khi test
@@ -42,5 +43,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    init_firebase()
     keep_alive()
     asyncio.run(main())

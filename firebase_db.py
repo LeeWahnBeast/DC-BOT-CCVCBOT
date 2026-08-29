@@ -32,6 +32,7 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Optional
 
@@ -48,12 +49,26 @@ OWNER_IDS: set[int] = set()
 
 def init_firebase(cred_path: Optional[str] = None, database_url: Optional[str] = None) -> None:
     """Khởi tạo app Firebase nếu chưa có app nào được init trong tiến trình.
-    An toàn để gọi nhiều lần / gọi ở nhiều module — chỉ init thật sự 1 lần."""
+    An toàn để gọi nhiều lần / gọi ở nhiều module — chỉ init thật sự 1 lần.
+
+    FIREBASE_CRED_PATH có thể là:
+    - đường dẫn tới 1 file JSON credential, HOẶC
+    - nội dung JSON credential dán thẳng vào biến môi trường (phổ biến trên
+      Render/Railway vì không upload được file kèm code) — hàm tự nhận diện
+      bằng cách thử json.loads() trước, thất bại mới coi là đường dẫn file.
+    """
     if firebase_admin._apps:
         return
-    cred_path = cred_path or os.environ["FIREBASE_CRED_PATH"]
+    cred_raw = cred_path or os.environ["FIREBASE_CRED_PATH"]
     database_url = database_url or os.environ["FIREBASE_DB_URL"]
-    cred = credentials.Certificate(cred_path)
+
+    try:
+        cred_dict = json.loads(cred_raw)
+        cred = credentials.Certificate(cred_dict)
+    except json.JSONDecodeError:
+        # Không phải JSON -> coi như đường dẫn file như cũ
+        cred = credentials.Certificate(cred_raw)
+
     firebase_admin.initialize_app(cred, {"databaseURL": database_url})
 
 
