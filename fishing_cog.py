@@ -48,7 +48,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from firebase_db import OWNER_IDS, get_user_data, save_user_data
+from firebase_db import OWNER_IDS, aget_user_data, asave_user_data
 from fish_data import ALL_FISH, FISH_BY_KEY, FISH_BY_TIER, TIERS, FishSpecies, tiers_unlocked_for_pull
 from rod_data import DEFAULT_ROD_KEY, RODS, ROD_LIST, Rod
 
@@ -381,16 +381,21 @@ class ReelView(discord.ui.LayoutView):
 # Shop cần câu — Components V2, phân trang từng cây
 # ---------------------------------------------------------------------------
 class RodShopView(discord.ui.LayoutView):
-    def __init__(self, user_id: int, index: int = 0):
+    def __init__(self, user_id: int, data: dict, index: int = 0):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.index = index
-        self._render()
+        self._render(data)
 
-    def _render(self) -> None:
+    @classmethod
+    async def create(cls, user_id: int, index: int = 0) -> "RodShopView":
+        """Fetch dữ liệu Firebase (async, không block loop) rồi tạo view."""
+        data = await aget_user_data(user_id)
+        return cls(user_id, data, index)
+
+    def _render(self, data: dict) -> None:
         self.clear_items()
         rod = ROD_LIST[self.index]
-        data = get_user_data(self.user_id)
         owned = rod.key in data["unlocked_rods"]
 
         container = discord.ui.Container(accent_colour=discord.Colour.blurple())
@@ -458,44 +463,50 @@ class RodShopView(discord.ui.LayoutView):
     async def _go_prev(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer()
         self.index = max(0, self.index - 1)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        data = await aget_user_data(self.user_id)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _go_next(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer()
         self.index = min(len(ROD_LIST) - 1, self.index + 1)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        data = await aget_user_data(self.user_id)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _buy(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer()
         rod = ROD_LIST[self.index]
-        data = get_user_data(self.user_id)
+        data = await aget_user_data(self.user_id)
         if rod.key in data["unlocked_rods"]:
-            await interaction.response.send_message("Bạn đã sở hữu cần này rồi!", ephemeral=True)
+            await interaction.followup.send("Bạn đã sở hữu cần này rồi!", ephemeral=True)
             return
         if data["vang"] < (rod.price_vang or 0):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Bạn không đủ Vàng! Cần `{fmt_vang(rod.price_vang)}` Vàng.", ephemeral=True
             )
             return
         data["vang"] -= rod.price_vang
         data["unlocked_rods"].append(rod.key)
-        save_user_data(self.user_id, data)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        await asave_user_data(self.user_id, data)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _equip(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer(ephemeral=True)
         rod = ROD_LIST[self.index]
-        data = get_user_data(self.user_id)
+        data = await aget_user_data(self.user_id)
         data["rod"] = rod.key
-        save_user_data(self.user_id, data)
-        await interaction.response.send_message(
+        await asave_user_data(self.user_id, data)
+        await interaction.followup.send(
             f"Đã trang bị {rod.emoji} `{rod.name}`!", ephemeral=True
         )
 
@@ -504,11 +515,16 @@ class RodShopView(discord.ui.LayoutView):
 # Kho cá + bán cá — Components V2, phân trang theo cấp (tier)
 # ---------------------------------------------------------------------------
 class SellView(discord.ui.LayoutView):
-    def __init__(self, user_id: int, tier_index: int = 0):
+    def __init__(self, user_id: int, data: dict, tier_index: int = 0):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.tier_index = tier_index
-        self._render()
+        self._render(data)
+
+    @classmethod
+    async def create(cls, user_id: int, tier_index: int = 0) -> "SellView":
+        data = await aget_user_data(user_id)
+        return cls(user_id, data, tier_index)
 
     def _owned_in_tier(self, data: dict, tier_key: str) -> list[tuple[FishSpecies, int]]:
         inv = data.get("inventory", {})
@@ -519,9 +535,8 @@ class SellView(discord.ui.LayoutView):
                 out.append((fish, qty))
         return out
 
-    def _render(self) -> None:
+    def _render(self, data: dict) -> None:
         self.clear_items()
-        data = get_user_data(self.user_id)
         tier = TIERS[self.tier_index]
         owned = self._owned_in_tier(data, tier.key)
         tier_total = sum(f.price * q for f, q in owned)
@@ -607,52 +622,59 @@ class SellView(discord.ui.LayoutView):
     async def _go_prev(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer()
         self.tier_index = max(0, self.tier_index - 1)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        data = await aget_user_data(self.user_id)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _go_next(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer()
         self.tier_index = min(len(TIERS) - 1, self.tier_index + 1)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        data = await aget_user_data(self.user_id)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _sell_selected(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
+        await interaction.response.defer()
         fish_key = interaction.data["values"][0]
         fish = FISH_BY_KEY.get(fish_key)
-        data = get_user_data(self.user_id)
+        data = await aget_user_data(self.user_id)
         qty = data.get("inventory", {}).get(fish_key, 0)
         if not fish or qty <= 0:
-            await interaction.response.send_message("Bạn không còn cá này trong kho!", ephemeral=True)
+            await interaction.followup.send("Bạn không còn cá này trong kho!", ephemeral=True)
             return
         gained = fish.price * qty
         data["inventory"][fish_key] = 0
         data["vang"] += gained
-        save_user_data(self.user_id, data)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        await asave_user_data(self.user_id, data)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _sell_tier(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
-        data = get_user_data(self.user_id)
+        await interaction.response.defer()
+        data = await aget_user_data(self.user_id)
         owned = self._owned_in_tier(data, TIERS[self.tier_index].key)
         gained = 0
         for fish, qty in owned:
             gained += fish.price * qty
             data["inventory"][fish.key] = 0
         data["vang"] += gained
-        save_user_data(self.user_id, data)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        await asave_user_data(self.user_id, data)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
     async def _sell_all(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
-        data = get_user_data(self.user_id)
+        await interaction.response.defer()
+        data = await aget_user_data(self.user_id)
         inv = data.get("inventory", {})
         gained = 0
         for fish in ALL_FISH:
@@ -662,9 +684,9 @@ class SellView(discord.ui.LayoutView):
                 inv[fish.key] = 0
         data["inventory"] = inv
         data["vang"] += gained
-        save_user_data(self.user_id, data)
-        self._render()
-        await interaction.response.edit_message(view=self)
+        await asave_user_data(self.user_id, data)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +702,7 @@ class CauCaVanCan(commands.Cog):
         # "Ứng dụng không phản hồi" nếu việc đọc/ghi DB mất hơn 3 giây.
         await interaction.response.defer()
 
-        data = get_user_data(interaction.user.id)
+        data = await aget_user_data(interaction.user.id)
 
         now = time.time()
         remaining = CAST_COOLDOWN_SECONDS - (now - data["last_cast"])
@@ -705,13 +727,13 @@ class CauCaVanCan(commands.Cog):
             data["bait"] = None  # mồi đã hết hạn
 
         data["last_cast"] = now
-        save_user_data(interaction.user.id, data)
+        await asave_user_data(interaction.user.id, data)
 
         fish = roll_fish(rod)
         rank_label, rank_badge = rank_for_score(data["score"])
 
         async def on_finish(success: Optional[bool]) -> None:
-            fresh = get_user_data(interaction.user.id)
+            fresh = await aget_user_data(interaction.user.id)
             if success is True:
                 inv = fresh.get("inventory", {})
                 inv[fish.key] = inv.get(fish.key, 0) + 1
@@ -720,7 +742,7 @@ class CauCaVanCan(commands.Cog):
             elif success is False:
                 fresh["score"] = max(0, fresh.get("score", 0) - 5)
             # success is None (timeout) -> không cộng/trừ gì, cá tự bơi đi
-            save_user_data(interaction.user.id, fresh)
+            await asave_user_data(interaction.user.id, fresh)
 
         view = ReelView(
             interaction.user, rod, fish, luck_bonus, rank_label, rank_badge,
@@ -730,13 +752,15 @@ class CauCaVanCan(commands.Cog):
 
     @app_commands.command(name="shop_cần", description="Xem và mở khóa cần câu")
     async def shop_can(self, interaction: discord.Interaction) -> None:
-        view = RodShopView(user_id=interaction.user.id)
-        await interaction.response.send_message(view=view)
+        await interaction.response.defer()
+        view = await RodShopView.create(user_id=interaction.user.id)
+        await interaction.followup.send(view=view)
 
     @app_commands.command(name="bán", description="Xem kho cá và bán cá lấy Vàng")
     async def ban(self, interaction: discord.Interaction) -> None:
-        view = SellView(user_id=interaction.user.id)
-        await interaction.response.send_message(view=view)
+        await interaction.response.defer()
+        view = await SellView.create(user_id=interaction.user.id)
+        await interaction.followup.send(view=view)
 
     @app_commands.command(name="mua_mồi", description="Mua mồi câu để tăng % may mắn khi câu")
     @app_commands.choices(loai_moi=[
@@ -745,10 +769,11 @@ class CauCaVanCan(commands.Cog):
         for b in BAIT_SHOP
     ])
     async def mua_moi(self, interaction: discord.Interaction, loai_moi: app_commands.Choice[str]) -> None:
+        await interaction.response.defer(ephemeral=True)
         bait = BAITS[loai_moi.value]
-        data = get_user_data(interaction.user.id)
+        data = await aget_user_data(interaction.user.id)
         if data["vang"] < bait.price_vang:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Bạn không đủ Vàng! Cần `{fmt_vang(bait.price_vang)}` Vàng.", ephemeral=True
             )
             return
@@ -758,8 +783,8 @@ class CauCaVanCan(commands.Cog):
             "luck": bait.luck,
             "expires_at": time.time() + bait.duration_s,
         }
-        save_user_data(interaction.user.id, data)
-        await interaction.response.send_message(
+        await asave_user_data(interaction.user.id, data)
+        await interaction.followup.send(
             f"✅ Đã dùng {E.BAIT} **{bait.name}** (+{bait.luck:.0%} may mắn, "
             f"còn `{format_time_left(bait.duration_s)}`)!",
             ephemeral=True,
@@ -767,7 +792,8 @@ class CauCaVanCan(commands.Cog):
 
     @app_commands.command(name="ví", description="Xem số Vàng / Kim Cương / Cash hiện có")
     async def vi(self, interaction: discord.Interaction) -> None:
-        data = get_user_data(interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+        data = await aget_user_data(interaction.user.id)
         rank_label, rank_badge = rank_for_score(data["score"])
         rod = RODS.get(data["rod"], RODS[DEFAULT_ROD_KEY])
 
@@ -785,7 +811,7 @@ class CauCaVanCan(commands.Cog):
             f"🎣 **Cần đang dùng:** {rod.emoji} `{rod.name}`"
         ))
         view.add_item(container)
-        await interaction.response.send_message(view=view, ephemeral=True)
+        await interaction.followup.send(view=view, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

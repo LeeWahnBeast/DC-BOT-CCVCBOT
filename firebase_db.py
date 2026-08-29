@@ -31,6 +31,7 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Optional
 
@@ -101,3 +102,18 @@ def save_user_data(user_id: int, data: dict) -> None:
         db.reference(f"{DB_ROOT}/{user_id}").update(to_save)
         return
     db.reference(f"{DB_ROOT}/{user_id}").set(to_save)
+
+
+# ---------------------------------------------------------------------------
+# Bản async — CHẠY CÁI NÀY TRONG COG, không gọi get_user_data/save_user_data
+# (bản sync) trực tiếp trong 1 command async, vì firebase_admin là thư viện
+# BLOCKING: gọi thẳng sẽ đứng nguyên event loop của bot trong lúc chờ mạng,
+# khiến TẤT CẢ lệnh khác (và cả Discord) không phản hồi được cho tới khi
+# request đó xong. Dùng to_thread để đẩy phần blocking ra thread khác.
+# ---------------------------------------------------------------------------
+async def aget_user_data(user_id: int) -> dict:
+    return await asyncio.to_thread(get_user_data, user_id)
+
+
+async def asave_user_data(user_id: int, data: dict) -> None:
+    await asyncio.to_thread(save_user_data, user_id, data)
