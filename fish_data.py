@@ -18,6 +18,7 @@ GHI CHÚ QUAN TRỌNG
 
 from __future__ import annotations
 
+import random
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -352,6 +353,55 @@ def _build_fish() -> tuple[
 
 
 ALL_FISH, FISH_BY_KEY, FISH_BY_TIER, FISH_BY_MAP, BOSS_FISH_KEYS = _build_fish()
+
+
+# ---------------------------------------------------------------------------
+# Rác — kết quả câu "hụt" (xem fishing_cog.roll_catch): không thuộc TIERS/
+# _RAW_FISH ở trên (không được chọn qua roll_fish bình thường / không hiện
+# trong /chọn_map hay ảnh hưởng tỉ lệ boss), CHỈ được chọn qua nhánh random
+# tỉ lệ rác riêng. Vẫn tái dùng dataclass FishSpecies để toàn bộ pipeline có
+# sẵn (kho đồ, bán, minigame kéo, EXP...) hoạt động được luôn không cần sửa
+# thêm — phân biệt rác/cá thật qua JUNK_KEYS (is_junk_fish()).
+# tier_key="rac" được đăng ký thêm vào FISH_BY_TIER bên dưới để
+# compute_challenge() (fishing_cog.py, tra FISH_BY_TIER[fish.tier_key] để
+# tính độ dai) không bị KeyError khi câu phải rác.
+# ---------------------------------------------------------------------------
+_RAC: list[_F] = [
+    _F("Ủng Cao Su Cũ", "—", 500),
+    _F("Lon Nước Ngọt Rỉ Sét", "—", 300),
+    _F("Túi Ni-lông Rách", "—", 150),
+    _F("Chai Nhựa Vỡ", "—", 200),
+    _F("Rong Rêu Ướt Sũng", "—", 100),
+    _F("Dép Tổ Ong Một Chiếc", "—", 350),
+    _F("Lưới Đánh Cá Mục Nát", "—", 250),
+    _F("Vỏ Lon Bia Gỉ Sét", "—", 300),
+]
+
+
+def _build_junk() -> tuple[list[FishSpecies], dict[str, FishSpecies], set[str]]:
+    junk: list[FishSpecies] = []
+    used_keys: set[str] = set()
+    for row in _RAC:
+        key = _make_unique_key(f"rac_{_slugify(row.name)}", used_keys)
+        item = FishSpecies(
+            key=key, name=row.name, weight_label=row.weight_label,
+            price=row.price, tier_key="rac", map_key=None, weight_can=None,
+        )
+        junk.append(item)
+    return junk, {j.key: j for j in junk}, {j.key for j in junk}
+
+
+JUNK_ITEMS, JUNK_BY_KEY, JUNK_KEYS = _build_junk()
+FISH_BY_TIER["rac"] = JUNK_ITEMS
+
+
+def is_junk_fish(fish_key: str) -> bool:
+    return fish_key in JUNK_KEYS
+
+
+def roll_junk() -> FishSpecies:
+    """Random đều 1 món rác (rác không phân cấp hiếm/thường như cá)."""
+    return random.choice(JUNK_ITEMS)
 
 
 def is_boss_fish(fish_key: str) -> bool:

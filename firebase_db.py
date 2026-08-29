@@ -205,7 +205,7 @@ async def aset_current_weather(weather: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Code đổi thưởng (Admin tạo bằng /createcode, người chơi đổi bằng nút
+# Code đổi thưởng (Admin tạo bằng /tạo-code, người chơi đổi bằng nút
 # "🎁 Nhập Code" trong /đồ_câu_lão_bát — xem RedeemCodeModal trong
 # fishing_cog.py). Lưu ở nhánh riêng "fishing/codes/<code>", KHÔNG theo
 # user_id vì 1 code có thể dùng chung cho nhiều người (tùy max_uses).
@@ -216,34 +216,56 @@ async def aset_current_weather(weather: dict) -> None:
 #     used_by: [user_id_str]                   # đã đổi rồi thì không đổi lại được
 #     created_by: int
 #     created_at: float
+#     expires_at: float                        # epoch giây — BẮT BUỘC, mỗi code
+#                                               # đều có hạn dùng (xem create_code)
 # ---------------------------------------------------------------------------
 CODES_ROOT = "fishing/codes"
+
+# Mỗi code PHẢI có hạn dùng — nếu người tạo (/tạo-code) không tự chỉ định số
+# ngày, hệ thống random đều trong khoảng này (đơn vị: ngày).
+DEFAULT_CODE_EXPIRY_MIN_DAYS = 1.0
+DEFAULT_CODE_EXPIRY_MAX_DAYS = 2.0
 
 
 def get_code(code: str) -> Optional[dict]:
     return db.reference(f"{CODES_ROOT}/{code}").get()
 
 
-def create_code(code: str, reward: dict, max_uses: Optional[int], created_by: int) -> None:
+def create_code(
+    code: str, reward: dict, max_uses: Optional[int], created_by: int,
+    expires_at: float,
+) -> None:
+    """Tạo 1 code mới. `expires_at` là mốc epoch giây BẮT BUỘC — bên gọi
+    (fishing_cog.py) tự random 1-2 ngày nếu admin không chỉ định số ngày cụ
+    thể, đảm bảo KHÔNG có code nào tồn tại vĩnh viễn."""
     db.reference(f"{CODES_ROOT}/{code}").set({
         "reward": reward,
         "max_uses": max_uses,
         "used_by": [],
         "created_by": created_by,
         "created_at": time.time(),
+        "expires_at": expires_at,
     })
 
 
 def redeem_code(code: str, user_id: int) -> dict:
     """Thử đổi 1 code cho user_id, DÙNG TRANSACTION để an toàn khi nhiều
     người đổi cùng lúc (tránh vượt quá max_uses / đổi trùng).
-    Trả về {"status": "ok"|"not_found"|"already_used"|"exhausted", "reward": dict|None}."""
+    Kiểm tra hết hạn TRƯỚC TIÊN (kể cả với code cũ từ trước khi có
+    expires_at — coi như không có hạn = không bao giờ hết hạn, tránh khóa
+    nhầm code đang tồn tại) — code hết hạn thì không được đổi dù còn lượt.
+    Trả về {"status": "ok"|"not_found"|"already_used"|"exhausted"|"expired",
+    "reward": dict|None}."""
     ref = db.reference(f"{CODES_ROOT}/{code}")
     outcome = {"status": "not_found", "reward": None}
 
     def _txn(current):
         if current is None:
             outcome["status"] = "not_found"
+            return current
+        expires_at = current.get("expires_at")
+        if expires_at is not None and time.time() >= expires_at:
+            outcome["status"] = "expired"
             return current
         used_by = list(current.get("used_by") or [])
         uid = str(user_id)
@@ -268,8 +290,11 @@ async def aget_code(code: str) -> Optional[dict]:
     return await asyncio.to_thread(get_code, code)
 
 
-async def acreate_code(code: str, reward: dict, max_uses: Optional[int], created_by: int) -> None:
-    await asyncio.to_thread(create_code, code, reward, max_uses, created_by)
+async def acreate_code(
+    code: str, reward: dict, max_uses: Optional[int], created_by: int,
+    expires_at: float,
+) -> None:
+    await asyncio.to_thread(create_code, code, reward, max_uses, created_by, expires_at)
 
 
 async def aredeem_code(code: str, user_id: int) -> dict:

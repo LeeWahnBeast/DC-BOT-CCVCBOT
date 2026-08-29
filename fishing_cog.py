@@ -69,12 +69,14 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from firebase_db import (
-    OWNER_IDS, acreate_code, aget_all_users, aget_code, aget_current_weather,
+    DEFAULT_CODE_EXPIRY_MAX_DAYS, DEFAULT_CODE_EXPIRY_MIN_DAYS, OWNER_IDS,
+    acreate_code, aget_all_users, aget_code, aget_current_weather,
     aget_user_data, aredeem_code, aset_current_weather, asave_user_data,
 )
 from fish_data import (
-    ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, MAP_BY_KEY, MAPS,
-    TIERS, FishSpecies, fish_in_map, tiers_unlocked_for_pull,
+    ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, FishTier, JUNK_ITEMS,
+    MAP_BY_KEY, MAPS, TIERS, FishSpecies, fish_in_map, is_junk_fish, roll_junk,
+    tiers_unlocked_for_pull,
 )
 from rod_data import DEFAULT_ROD_KEY, LIMITED_ROD_LIST, RODS, ROD_LIST, Rod
 from skill_data import SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects
@@ -98,6 +100,10 @@ class E:
     GOLD = "<:xu:1543162904424218644>"
     BAIT = "🪱"
     FISH_NUMBER = "🐟"
+    # Emoji custom "Năng lượng" — thay cho biểu tượng pin 🔋 mặc định ở mọi
+    # nơi hiển thị thanh thể lực/năng lượng cho người chơi.
+    ENERGY = "<:nangluong:1543219505533292664>"
+    JUNK = "🗑️"
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +304,40 @@ def roll_fish(
     return random.choices(pool, weights=fish_weights)[0]
 
 
+# ---------------------------------------------------------------------------
+# Tỉ lệ câu ra rác — 20% cơ bản, cộng thêm/bớt theo thời tiết hiện tại
+# (weather.junk_chance_delta, xem weather_data.py), luôn kẹp về [0, 0.9] để
+# không bao giờ chắc chắn 100% ra rác hoặc không thể ra rác.
+# ---------------------------------------------------------------------------
+BASE_JUNK_CHANCE = 0.20
+
+# "Rác" hiện là 1 tab riêng cuối cùng trong /bán (Kho Cá) — tái dùng
+# FishTier chỉ để có label/key hiển thị nhất quán với các tier cá thật,
+# KHÔNG đăng ký vào fish_data.TIERS (giữ nguyên không ảnh hưởng roll_fish/
+# tiers_unlocked_for_pull). required_pull=0 không có ý nghĩa gì ở đây vì
+# tier rác không tham gia roll theo lực kéo.
+RAC_TIER = FishTier("rac", f"{E.JUNK} Rác", 0)
+SELL_TIERS: list[FishTier] = TIERS + [RAC_TIER]
+# Toàn bộ vật phẩm có thể bán qua /bán (cá thật + rác) — dùng cho nút
+# "Bán Nhanh (Tất Cả)" để không bỏ sót rác đang tồn trong kho.
+ALL_SELLABLE = ALL_FISH + JUNK_ITEMS
+
+
+def roll_catch(
+    rod: Rod, map_key: Optional[str] = None, weather: Optional[Weather] = None,
+) -> FishSpecies:
+    """Quyết định kết quả 1 lần thả cần: có `junk_chance` xác suất ra rác
+    (không phụ thuộc map/lực kéo — rác trôi nổi ở đâu cũng gặp được), còn
+    lại roll cá bình thường qua `roll_fish`. Trả về 1 FishSpecies — dùng
+    `fish_data.is_junk_fish(result.key)` ở nơi gọi để phân biệt."""
+    junk_chance = BASE_JUNK_CHANCE + (weather.junk_chance_delta if weather else 0.0)
+    junk_chance = max(0.0, min(0.9, junk_chance))
+    if random.random() < junk_chance:
+        return roll_junk()
+    boss_weight_mult = weather.boss_weight_mult if weather else 1.0
+    return roll_fish(rod, map_key=map_key, boss_weight_mult=boss_weight_mult)
+
+
 def compute_challenge(rod: Rod, fish: FishSpecies) -> tuple[float, float]:
     """Tính (target_progress, tension_per_click_max) cho ván kéo cá.
     Thiết kế theo tỉ lệ RIÊNG của từng cần (không phụ thuộc tuyệt đối vào
@@ -382,7 +422,7 @@ def build_fail_view(
     if level_info:
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
-            f"🔋 **Thể lực:** `{level_info['energy']}/{level_info['max_energy']}`"
+            f"{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
         ))
     _add_continue_row(container, on_continue)
     view.add_item(container)
@@ -399,19 +439,23 @@ def build_success_view(
     bait_luck: float = 0.0,
     bait_time_left: Optional[str] = None,
     is_boss: bool = False,
+    is_junk: bool = False,
     level_info: Optional[dict] = None,
     on_continue: Optional[ContinueCallback] = None,
 ) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(
-        accent_colour=discord.Colour.dark_purple() if is_boss else discord.Colour.gold()
+        accent_colour=discord.Colour.dark_grey() if is_junk
+        else (discord.Colour.dark_purple() if is_boss else discord.Colour.gold())
     )
 
     header = (
         f"{E.TOP3} **{member.display_name}** {rank_badge} `[{rank_label}]`\n"
         f"🎣 **Cần:** {rod.emoji} `{rod.name}`"
     )
-    if is_boss:
+    if is_junk:
+        header = f"{E.JUNK} **CÂU PHẢI RÁC RỒI...** {E.JUNK}\n" + header
+    elif is_boss:
         header = f"👑🐉 **ĐÃ CÂU ĐƯỢC BOSS!** 👑🐉\n" + header
     if bait_name:
         header += (
@@ -420,23 +464,38 @@ def build_success_view(
         )
     container.add_item(discord.ui.TextDisplay(header))
     container.add_item(discord.ui.Separator())
-    container.add_item(discord.ui.TextDisplay(
-        f"**🎉 Chúc mừng bạn đã câu được:**\n"
-        f"**Tên cá:** {fish.name}\n"
-        f"**Khối lượng:** `{fish.weight_label}`\n"
-        f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / con"
-    ))
+    if is_junk:
+        container.add_item(discord.ui.TextDisplay(
+            f"**{E.JUNK} Bạn kéo lên được:**\n"
+            f"**Món đồ:** {fish.name}\n"
+            f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / món"
+        ))
+    else:
+        container.add_item(discord.ui.TextDisplay(
+            f"**🎉 Chúc mừng bạn đã câu được:**\n"
+            f"**Tên cá:** {fish.name}\n"
+            f"**Khối lượng:** `{fish.weight_label}`\n"
+            f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / con"
+        ))
     if level_info:
         container.add_item(discord.ui.Separator())
-        exp_line = f"✨ **+{level_info['exp_gained']} EXP**"
-        if level_info.get("leveled_up"):
-            exp_line += f"\n🎉 **LÊN CẤP {level_info['new_level']}!** Thể lực đã được hồi đầy."
-        exp_line += f"\n🔋 **Thể lực:** `{level_info['energy']}/{level_info['max_energy']}`"
+        if is_junk:
+            exp_line = f"{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
+        else:
+            exp_line = f"✨ **+{level_info['exp_gained']} EXP**"
+            if level_info.get("leveled_up"):
+                exp_line += f"\n🎉 **LÊN CẤP {level_info['new_level']}!** Năng lượng đã được hồi đầy."
+            exp_line += f"\n{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
         container.add_item(discord.ui.TextDisplay(exp_line))
     container.add_item(discord.ui.Separator())
-    container.add_item(discord.ui.TextDisplay(
-        f"# {E.FISH_NUMBER}\nDùng `/bán` để đổi cá trong kho ra Vàng."
-    ))
+    if is_junk:
+        container.add_item(discord.ui.TextDisplay(
+            f"# {E.JUNK}\nVẫn dùng `/bán` được nếu muốn — bán ve chai kiếm ít Vàng lẻ."
+        ))
+    else:
+        container.add_item(discord.ui.TextDisplay(
+            f"# {E.FISH_NUMBER}\nDùng `/bán` để đổi cá trong kho ra Vàng."
+        ))
     _add_continue_row(container, on_continue)
     view.add_item(container)
     return view
@@ -512,6 +571,7 @@ class ReelView(discord.ui.LayoutView):
         self.bait_time_left = bait_time_left
         self.on_finish = on_finish  # async callback(success: bool | None, energy_used: int) -> dict
         self.is_boss = is_boss
+        self.is_junk = is_junk_fish(fish.key)
         self.energy = energy            # thể lực còn lại tại thời điểm bắt đầu câu (snapshot cục bộ)
         self.max_energy = max_energy
         self.energy_spent = 0            # số thể lực đã tiêu trong ván này (số lần bấm Kéo hợp lệ)
@@ -620,7 +680,9 @@ class ReelView(discord.ui.LayoutView):
             f"**Cần:** {self.rod.emoji} `{self.rod.name}` "
             f"(Độ dài dây câu: `{self.rod.line_len}`)"
         )
-        if self.is_boss:
+        if self.is_junk:
+            header = f"{E.JUNK} **Có vẻ chỉ là rác trôi...** {E.JUNK}\n" + header
+        elif self.is_boss:
             header = f"👑🐉 **BOSS XUẤT HIỆN: {self.fish.name}!** 👑🐉\n" + header
         if self.bait_name:
             header += f"\n✨ Mồi: {E.BAIT} **{self.bait_name}** - Còn `{self.bait_time_left}`"
@@ -639,13 +701,14 @@ class ReelView(discord.ui.LayoutView):
         slow_note = ""
         if now < self.tension_slow_until:
             slow_note = f" *(đang làm chậm, còn `{format_time_left(self.tension_slow_until - now)}`)*"
+        catch_label = f"{E.JUNK} Rác:" if self.is_junk else "🐟 Cá:"
         container.add_item(discord.ui.TextDisplay(
-            f"**🐟 Cá:** `{self.fish.name}`\n"
+            f"**{catch_label}** `{self.fish.name}`\n"
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
             f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
             f"❤️ Máu cá: `{make_bar(hp_ratio)}` {hp_current:,}/{hp_max:,}\n"
             f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}{slow_note}\n"
-            f"🔋 Thể lực: `{make_bar(energy_ratio)}` {self.energy}/{self.max_energy}"
+            f"{E.ENERGY} Năng lượng: `{make_bar(energy_ratio)}` {self.energy}/{self.max_energy}"
         ))
         container.add_item(discord.ui.Separator())
 
@@ -664,7 +727,7 @@ class ReelView(discord.ui.LayoutView):
                 used = skill.key in self.skills_used
                 can_afford = self.energy >= skill.energy_cost
                 skill_btn = discord.ui.Button(
-                    label=f"{skill.emoji} {skill.name} ({skill.energy_cost}🔋)",
+                    label=f"{skill.emoji} {skill.name} ({skill.energy_cost} NL)",
                     style=discord.ButtonStyle.secondary,
                     disabled=used or not can_afford,
                     custom_id=self._cid_skills[skill.key],
@@ -699,7 +762,7 @@ class ReelView(discord.ui.LayoutView):
             return
         if self.energy <= 0:
             await interaction.response.send_message(
-                "🔋 Bạn đã hết thể lực rồi, phải nghỉ tay cho thể lực hồi lại đã "
+                f"{E.ENERGY} Bạn đã hết năng lượng rồi, phải nghỉ tay cho năng lượng hồi lại đã "
                 "mới kéo tiếp được (tự hồi dần theo thời gian)!",
                 ephemeral=True,
             )
@@ -775,7 +838,7 @@ class ReelView(discord.ui.LayoutView):
             return
         if self.energy < skill.energy_cost:
             await interaction.response.send_message(
-                f"🔋 Không đủ thể lực để dùng **{skill.name}** (cần `{skill.energy_cost}`)!",
+                f"{E.ENERGY} Không đủ năng lượng để dùng **{skill.name}** (cần `{skill.energy_cost}`)!",
                 ephemeral=True,
             )
             return
@@ -842,7 +905,7 @@ class ReelView(discord.ui.LayoutView):
                     self.member, self.rod, self.rank_label, self.rank_badge, self.fish,
                     bait_name=self.bait_name, bait_luck=self.luck_bonus,
                     bait_time_left=self.bait_time_left, is_boss=self.is_boss,
-                    level_info=result, on_continue=self.on_continue,
+                    is_junk=self.is_junk, level_info=result, on_continue=self.on_continue,
                 )
                 await interaction.response.edit_message(view=view, attachments=[])
             else:
@@ -1177,7 +1240,7 @@ class SkillShopView(discord.ui.LayoutView):
         stats = (
             f"{skill.description}\n"
             f"**Hiệu ứng:** {effect_line}\n"
-            f"**Thể lực tiêu hao:** `{skill.energy_cost}` mỗi lần dùng (1 lần/ván câu)\n"
+            f"**Năng lượng tiêu hao:** `{skill.energy_cost}` mỗi lần dùng (1 lần/ván câu)\n"
             f"{E.GOLD} Giá: `{fmt_gia_trieu(skill.price_vang)}` Vàng"
         )
         container.add_item(discord.ui.TextDisplay(stats))
@@ -1412,7 +1475,7 @@ class BaitShopView(discord.ui.LayoutView):
 # ---------------------------------------------------------------------------
 # Nút "🎁 Nhập Code" trong /đồ_câu_lão_bát — mở modal nhập text, đổi thưởng
 # qua firebase_db.aredeem_code (xem CODES_ROOT/reward ở đó). Admin tạo code
-# bằng lệnh /createcode (cuối file, trong CauCaVanCan).
+# bằng lệnh /tạo-code (cuối file, trong CauCaVanCan).
 # ---------------------------------------------------------------------------
 class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
     code_input: discord.ui.TextInput = discord.ui.TextInput(
@@ -1444,6 +1507,12 @@ class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
         if status == "exhausted":
             await interaction.followup.send(
                 f"⚠️ Code `{code}` đã hết lượt đổi!", ephemeral=True,
+            )
+            return
+        if status == "expired":
+            await interaction.followup.send(
+                f"⌛ Code `{code}` đã hết hạn sử dụng, không thể đổi được nữa!",
+                ephemeral=True,
             )
             return
 
@@ -1484,7 +1553,7 @@ class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
 
         if not lines:
             # Code hợp lệ nhưng reward rỗng (không nên xảy ra nếu tạo bằng
-            # /createcode — chỉ phòng hờ dữ liệu Firebase bị sửa tay).
+            # /tạo-code — chỉ phòng hờ dữ liệu Firebase bị sửa tay).
             await interaction.followup.send(
                 f"⚠️ Code `{code}` không có phần thưởng hợp lệ nào!", ephemeral=True,
             )
@@ -1645,20 +1714,20 @@ class SellView(discord.ui.LayoutView):
 
     def _render(self, data: dict) -> None:
         self.clear_items()
-        tier = TIERS[self.tier_index]
+        tier = SELL_TIERS[self.tier_index]
         owned = self._owned_in_tier(data, tier.key)
         tier_total = sum(f.price * q for f, q in owned)
         grand_total = sum(
-            f.price * q for f in ALL_FISH for k, q in [(f.key, data.get("inventory", {}).get(f.key, 0))] if q > 0
+            f.price * q for f in ALL_SELLABLE for k, q in [(f.key, data.get("inventory", {}).get(f.key, 0))] if q > 0
         )
 
         container = discord.ui.Container(accent_colour=discord.Colour.green())
         container.add_item(discord.ui.TextDisplay(
-            f"## 🐟 Kho Cá — {tier.label}  ({self.tier_index + 1}/{len(TIERS)})"
+            f"## 🐟 Kho Cá — {tier.label}  ({self.tier_index + 1}/{len(SELL_TIERS)})"
         ))
 
         if not owned:
-            container.add_item(discord.ui.TextDisplay("_Bạn chưa có cá nào ở cấp này._"))
+            container.add_item(discord.ui.TextDisplay("_Bạn chưa có gì ở mục này._"))
         else:
             lines = []
             for fish, qty in owned:
@@ -1699,7 +1768,7 @@ class SellView(discord.ui.LayoutView):
                                        disabled=self.tier_index == 0, custom_id=self._cid_prev)
         prev_btn.callback = self._go_prev
         next_btn = discord.ui.Button(label="Sau ▶", style=discord.ButtonStyle.secondary,
-                                       disabled=self.tier_index == len(TIERS) - 1,
+                                       disabled=self.tier_index == len(SELL_TIERS) - 1,
                                        custom_id=self._cid_next)
         next_btn.callback = self._go_next
         nav_row.add_item(prev_btn)
@@ -1744,7 +1813,7 @@ class SellView(discord.ui.LayoutView):
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
-        self.tier_index = min(len(TIERS) - 1, self.tier_index + 1)
+        self.tier_index = min(len(SELL_TIERS) - 1, self.tier_index + 1)
         data = await aget_user_data(self.user_id)
         self._render(data)
         await interaction.edit_original_response(view=self)
@@ -1772,7 +1841,7 @@ class SellView(discord.ui.LayoutView):
             return
         await interaction.response.defer()
         data = await aget_user_data(self.user_id)
-        owned = self._owned_in_tier(data, TIERS[self.tier_index].key)
+        owned = self._owned_in_tier(data, SELL_TIERS[self.tier_index].key)
         gained = 0
         for fish, qty in owned:
             gained += fish.price * qty
@@ -1789,7 +1858,7 @@ class SellView(discord.ui.LayoutView):
         data = await aget_user_data(self.user_id)
         inv = data.get("inventory", {})
         gained = 0
-        for fish in ALL_FISH:
+        for fish in ALL_SELLABLE:
             qty = inv.get(fish.key, 0)
             if qty > 0:
                 gained += fish.price * qty
@@ -1893,7 +1962,13 @@ class MapSelectView(discord.ui.LayoutView):
 # ---------------------------------------------------------------------------
 class LeaderboardView(discord.ui.LayoutView):
     TABS = ("can_nang", "vang")
-    TAB_LABELS = {"can_nang": "⚖️ Cân Nặng Cá", "vang": f"{E.GOLD} Vàng"}
+    # LƯU Ý: label của discord.ui.Button chỉ nhận TEXT THUẦN — cú pháp emoji
+    # custom `<:tên:id>` KHÔNG được Discord parse trong label (khác với
+    # TextDisplay/nội dung tin nhắn thường), nên nếu nhét thẳng vào label sẽ
+    # hiện nguyên văn `<:xu:...>` thay vì icon (bug đã gặp ở nút "Vàng" cũ).
+    # Icon custom PHẢI truyền qua tham số `emoji=` riêng — xem TAB_EMOJIS.
+    TAB_LABELS = {"can_nang": "Cân Nặng Cá", "vang": "Xu"}
+    TAB_EMOJIS = {"can_nang": "⚖️", "vang": E.GOLD}
     TOP_N = 10
     _MEDALS = ("🥇", "🥈", "🥉")
 
@@ -1984,6 +2059,7 @@ class LeaderboardView(discord.ui.LayoutView):
         for t in self.TABS:
             btn = discord.ui.Button(
                 label=self.TAB_LABELS[t],
+                emoji=self.TAB_EMOJIS.get(t),
                 style=discord.ButtonStyle.primary if self.tab == t else discord.ButtonStyle.secondary,
                 custom_id=self._cid_tabs[t],
             )
@@ -2124,7 +2200,7 @@ class CauCaVanCan(commands.Cog):
 
         if data.get("energy", 0) <= 0 and interaction.user.id not in OWNER_IDS:
             await interaction.followup.send(
-                f"🔋 Bạn đã hết thể lực rồi! Thể lực tự hồi theo thời gian "
+                f"{E.ENERGY} Bạn đã hết năng lượng rồi! Năng lượng tự hồi theo thời gian "
                 f"(mỗi `{ENERGY_REGEN_MINUTES}` phút +1), quay lại sau nhé!",
                 ephemeral=True,
             )
@@ -2156,11 +2232,9 @@ class CauCaVanCan(commands.Cog):
         if weather:
             luck_bonus += weather.luck_delta
 
-        fish = roll_fish(
-            rod, map_key=data.get("current_map"),
-            boss_weight_mult=weather.boss_weight_mult if weather else 1.0,
-        )
+        fish = roll_catch(rod, map_key=data.get("current_map"), weather=weather)
         is_boss = fish.key in BOSS_FISH_KEYS
+        is_junk = is_junk_fish(fish.key)
         rank_label, rank_badge = rank_for_score(data["score"])
         level = data.get("level", 1)
         energy = data.get("energy", 0)
@@ -2184,25 +2258,30 @@ class CauCaVanCan(commands.Cog):
             }
 
             if success is True:
+                # Rác vẫn được thêm vào kho (bán được ve chai lấy chút Vàng
+                # lẻ) nhưng KHÔNG cộng điểm/EXP/cân nặng cộng dồn — chỉ cá
+                # thật mới tính vào tiến trình (bảng xếp hạng, lên cấp...).
                 inv = fresh.get("inventory", {})
                 inv[fish.key] = inv.get(fish.key, 0) + 1
                 fresh["inventory"] = inv
-                fresh["score"] = fresh.get("score", 0) + 10
-                if fish.weight_can:
-                    fresh["total_weight_can"] = fresh.get("total_weight_can", 0.0) + fish.weight_can
 
-                exp_gain = exp_for_fish(fish)
-                fresh, leveled_up, _levels_gained = add_exp(fresh, exp_gain)
-                if leveled_up:
-                    # Thưởng hồi đầy thể lực khi lên cấp.
-                    fresh["energy"] = max_energy_for_level(fresh["level"])
-                    fresh["energy_updated_at"] = time.time()
+                if not is_junk:
+                    fresh["score"] = fresh.get("score", 0) + 10
+                    if fish.weight_can:
+                        fresh["total_weight_can"] = fresh.get("total_weight_can", 0.0) + fish.weight_can
 
-                result["exp_gained"] = exp_gain
-                result["leveled_up"] = leveled_up
-                result["new_level"] = fresh["level"]
-                result["energy"] = fresh["energy"]
-                result["max_energy"] = max_energy_for_level(fresh["level"])
+                    exp_gain = exp_for_fish(fish)
+                    fresh, leveled_up, _levels_gained = add_exp(fresh, exp_gain)
+                    if leveled_up:
+                        # Thưởng hồi đầy năng lượng khi lên cấp.
+                        fresh["energy"] = max_energy_for_level(fresh["level"])
+                        fresh["energy_updated_at"] = time.time()
+
+                    result["exp_gained"] = exp_gain
+                    result["leveled_up"] = leveled_up
+                    result["new_level"] = fresh["level"]
+                    result["energy"] = fresh["energy"]
+                    result["max_energy"] = max_energy_for_level(fresh["level"])
             elif success is False:
                 fresh["score"] = max(0, fresh.get("score", 0) - 5)
             # success is None (timeout) -> không cộng/trừ điểm/EXP, cá tự bơi đi
@@ -2285,7 +2364,7 @@ class CauCaVanCan(commands.Cog):
         container.add_item(discord.ui.TextDisplay(
             f"📈 **Cấp:** `{level}` — EXP: `{exp}/{exp_needed}`\n"
             f"`{make_bar(exp / exp_needed if exp_needed else 0)}`\n"
-            f"🔋 **Thể lực:** `{energy}/{max_energy}`\n"
+            f"{E.ENERGY} **Năng lượng:** `{energy}/{max_energy}`\n"
             f"`{make_bar(energy / max_energy if max_energy else 0)}`"
         ))
         container.add_item(discord.ui.Separator())
@@ -2306,7 +2385,7 @@ class CauCaVanCan(commands.Cog):
         return isinstance(member, discord.Member) and member.guild_permissions.administrator
 
     @app_commands.command(
-        name="createcode",
+        name="tạo-code",
         description="[Admin] Tạo code đổi thưởng (Vàng / cần câu / kỹ năng / mồi câu)",
     )
     @app_commands.describe(
@@ -2316,6 +2395,7 @@ class CauCaVanCan(commands.Cog):
         ky_nang="Kỹ năng tặng kèm (mở khóa, chưa tự trang bị)",
         moi_cau="Mồi câu tặng kèm (dùng ngay khi đổi code)",
         so_lan_dung="Số lượt đổi tối đa cho cả server (để trống = không giới hạn)",
+        thoi_han_ngay="Hạn dùng code, đơn vị NGÀY (để trống = random 1-2 ngày)",
     )
     async def createcode(
         self,
@@ -2326,6 +2406,7 @@ class CauCaVanCan(commands.Cog):
         ky_nang: Optional[str] = None,
         moi_cau: Optional[str] = None,
         so_lan_dung: Optional[int] = None,
+        thoi_han_ngay: Optional[float] = None,
     ) -> None:
         if not self._is_admin(interaction):
             await interaction.response.send_message(
@@ -2354,6 +2435,12 @@ class CauCaVanCan(commands.Cog):
         if so_lan_dung is not None and so_lan_dung <= 0:
             await interaction.response.send_message(
                 "⚠️ Số lượt dùng phải lớn hơn 0 (để trống nếu muốn không giới hạn)!",
+                ephemeral=True,
+            )
+            return
+        if thoi_han_ngay is not None and thoi_han_ngay <= 0:
+            await interaction.response.send_message(
+                "⚠️ Thời hạn code phải lớn hơn 0 ngày (để trống để bot tự random 1-2 ngày)!",
                 ephemeral=True,
             )
             return
@@ -2387,7 +2474,14 @@ class CauCaVanCan(commands.Cog):
             )
             return
 
-        await acreate_code(final_code, reward, so_lan_dung, interaction.user.id)
+        # Mỗi code PHẢI có hạn dùng — nếu admin không tự nhập số ngày, random
+        # đều trong khoảng 1-2 ngày (xem firebase_db.DEFAULT_CODE_EXPIRY_*).
+        expiry_days = thoi_han_ngay if thoi_han_ngay is not None else random.uniform(
+            DEFAULT_CODE_EXPIRY_MIN_DAYS, DEFAULT_CODE_EXPIRY_MAX_DAYS,
+        )
+        expires_at = time.time() + expiry_days * 86400
+
+        await acreate_code(final_code, reward, so_lan_dung, interaction.user.id, expires_at)
 
         reward_lines = []
         if "vang" in reward:
@@ -2408,6 +2502,8 @@ class CauCaVanCan(commands.Cog):
             f"## ✅ Đã tạo code `{final_code}`\n"
             + "\n".join(f"- {l}" for l in reward_lines)
             + f"\n\n**Số lượt đổi:** `{so_lan_dung if so_lan_dung else 'Không giới hạn'}`\n"
+            f"**Hạn dùng:** `{format_time_left(expiry_days * 86400)}` "
+            f"(hết hạn lúc <t:{int(expires_at)}:f>)\n"
             f"Người chơi bấm nút **🎁 Nhập Code** trong `/đồ_câu_lão_bát` để đổi."
         ))
         view.add_item(container)
