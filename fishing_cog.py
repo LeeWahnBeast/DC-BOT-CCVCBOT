@@ -338,17 +338,38 @@ def roll_catch(
     return roll_fish(rod, map_key=map_key, boss_weight_mult=boss_weight_mult)
 
 
+
+# Buff máu (target_progress) riêng cho cá "tiền khủng" — áp theo GIÁ TUYỆT
+# ĐỐI của cá (không phụ thuộc tier), cộng dồn với độ dai vốn có trong cùng
+# tier ở trên. Cá giá càng cao thì hệ số càng lớn.
+HP_BUFF_PRICE_10M = 10_000_000
+HP_BUFF_PRICE_5M = 5_000_000
+HP_BUFF_MULT_OVER_10M = 3.0
+HP_BUFF_MULT_OVER_5M = 2.0
+
+
+def hp_buff_multiplier(price: int) -> float:
+    """Hệ số nhân máu theo giá cá: >10 triệu xu = x3, >5 triệu xu = x2,
+    còn lại = x1 (không buff)."""
+    if price > HP_BUFF_PRICE_10M:
+        return HP_BUFF_MULT_OVER_10M
+    if price > HP_BUFF_PRICE_5M:
+        return HP_BUFF_MULT_OVER_5M
+    return 1.0
+
+
 def compute_challenge(rod: Rod, fish: FishSpecies) -> tuple[float, float]:
     """Tính (target_progress, tension_per_click_max) cho ván kéo cá.
     Thiết kế theo tỉ lệ RIÊNG của từng cần (không phụ thuộc tuyệt đối vào
     độ lớn số liệu giữa các cần khác nhau) để cần yếu/mạnh đều cần khoảng
-    5-12 lần bấm "Kéo!" hợp lý, cá đắt hơn trong cùng 1 cấp thì dai hơn."""
+    5-12 lần bấm "Kéo!" hợp lý, cá đắt hơn trong cùng 1 cấp thì dai hơn.
+    Cá giá trên 5/10 triệu xu được buff thêm máu qua hp_buff_multiplier."""
     pool = FISH_BY_TIER[fish.tier_key]
     max_price = max(f.price for f in pool)
     price_ratio = fish.price / max_price  # 0..1, càng lớn cá càng "dai"
 
     clicks_needed = random.uniform(4.0, 9.0) * (0.6 + 0.7 * price_ratio)
-    target = rod.pull * clicks_needed
+    target = rod.pull * clicks_needed * hp_buff_multiplier(fish.price)
     return target, clicks_needed
 
 
