@@ -30,6 +30,8 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
           energy: int                  # thể lực hiện có (thanh năng lượng riêng, hao theo lần bấm "Kéo!")
           energy_updated_at: float     # epoch giây lần cuối tính hồi thể lực (dùng để hồi lazy theo thời gian)
           current_map: str | None      # key khu vực câu đang chọn (fish_data.MAPS) — None = câu tất cả khu vực
+          unlocked_skills: [str]        # danh sách key skill câu cá đã mở khóa (skill_data.SKILL_SHOP)
+          equipped_skills: [str|None]     # 3 ô trang bị skill, mỗi ô None hoặc key skill (skill_data.SKILL_SLOTS)
 
 Đổi DB_ROOT nếu bot đã có sẵn nhánh khác.
 """
@@ -96,6 +98,8 @@ def _default_data() -> dict:
         "energy": 500,
         "energy_updated_at": 0.0,
         "current_map": None,
+        "unlocked_skills": [],
+        "equipped_skills": [None, None, None],
     }
 
 

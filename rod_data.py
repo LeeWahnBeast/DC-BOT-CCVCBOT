@@ -17,6 +17,10 @@ GHI CHÚ
 - Các cây "Cách Nhận" không phải "Mua trực tiếp bằng Vàng" (quest/sự kiện/
   chế tạo) được để price_vang=None => không bán trong shop bằng Vàng, chỉ
   mở khóa qua lệnh riêng (vd lệnh admin/nhiệm vụ) bằng hàm grant_rod.
+- GIÁ TRIỆU: toàn bộ price_vang của các cần bán trực tiếp đã được quy về
+  bội số tròn của 1.000.000 (1 triệu) Vàng, khớp với mặt bằng giá cá (cá
+  cấp cao bán được hàng chục/hàng trăm triệu Vàng/con) và hiển thị bằng
+  fishing_cog.fmt_gia_trieu() dạng "X triệu" thay vì số lẻ.
 """
 
 from __future__ import annotations
@@ -40,27 +44,27 @@ class Rod:
 
 ROD_LIST: list[Rod] = [
     Rod("nguoi_yeu_cu", "Cần Câu Người Yêu Cũ Tặng", "🎏", 150, 25, 3,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=5_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=1_000_000),
     Rod("thep_gan", "Thép Gân", "🪝", 350, 50, 4,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=20_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=3_000_000),
     Rod("thep_gan_dieu_tang", "Thép Gân Điêu Tàng", "🪝", 800, 75, 5,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=80_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=8_000_000),
     Rod("thep_gan_tam_hop", "Thép Gân Tam Hợp", "🪝", 1_500, 100, 7,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=250_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=20_000_000),
     Rod("can_may_ngang", "Cần Máy Ngang", "🎣", 2_500, 150, 9,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=800_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=50_000_000),
     Rod("thep_gan_hop_kim", "Thép Gân Hợp Kim", "🎣", 5_000, 200, 12,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=2_500_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=120_000_000),
     Rod("thep_gan_hoang_kim", "Thép Gân Hoàng Kim", "🎣", 8_000, 300, 15,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=80_000_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=250_000_000),
     Rod("tre", "Cần Tre", "🎋", 12_000, 500, 20,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=150_000_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=400_000_000),
     Rod("pho_cot_chi_thu", "Phó Cốt Chi Thứ", "🦴", 15_000, 400, 15,
         "Mỗi đòn +500 sát thương", "Luyện từ Cá Mập Biến Dị 10 vạn cân"),
     Rod("am_thep_gan", "Âm · Thép Gân", "⛓️", 20_000, 600, 40,
         "Không", "Nhận khi hồi sinh Hạ Điếu Đế"),
     Rod("thep_gan_vibranium", "Thép Gân Vibranium", "🩶", 30_000, 700, 40,
-        "Không", "Mua trực tiếp bằng Vàng", price_vang=300_000_000),
+        "Không", "Mua trực tiếp bằng Vàng", price_vang=600_000_000),
     Rod("nuot_troi", "Cần Nuốt Trời", "🐉", 25_000, 500, 35,
         "Nhân 20% Sát Thương Câu, mỗi 200 thể lực tiêu hao +5% sát thương",
         "Nhận từ phó bản Cá Chép Kình Biến"),

@@ -34,6 +34,12 @@ CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
     * Chống spam: mỗi nút chỉ nhận 1 lần bấm mỗi COOLDOWN_CLICK giây;
       bấm dồn dập trong lúc đang hồi sẽ bị bỏ qua kèm cảnh báo, không
       tính tiến độ lẫn không tăng thêm tension.
+- Tên cá và MÁU CÁ (dạng thanh, giảm dần từ 100% -> 0% theo mỗi lần bấm
+  "Kéo!") hiển thị ngay khi bắt đầu ván câu, không chỉ khi câu xong.
+- KỸ NĂNG (skill_data.py): mỗi người có SKILL_SLOTS (3) ô trang bị, mua/mở
+  khóa qua /shop_kỹ_năng. Mỗi skill trang bị chỉ dùng được 1 lần/ván câu,
+  tốn thể lực, hiệu ứng là trừ ngay % độ căng dây hoặc làm chậm tốc độ
+  tăng độ căng dây trong vài giây — không có skill gây thêm sát thương.
 """
 
 from __future__ import annotations
@@ -56,6 +62,7 @@ from fish_data import (
     TIERS, FishSpecies, fish_in_map, tiers_unlocked_for_pull,
 )
 from rod_data import DEFAULT_ROD_KEY, RODS, ROD_LIST, Rod
+from skill_data import SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects
 
 ASSET_DIR = Path(__file__).parent / "assets"
 ROD_BREAK_IMAGE = ASSET_DIR / "can_gay.png"
@@ -95,6 +102,19 @@ def fmt_vang(n) -> str:
     if n == float("inf"):
         return "∞"
     return f"{int(n):,}".replace(",", ".")
+
+
+def fmt_gia_trieu(n) -> str:
+    """Hiển thị giá theo đơn vị triệu Vàng (dùng cho giá cần câu / skill —
+    đã quy về bội số 1.000.000 để đồng bộ mặt bằng giá "giá triệu")."""
+    if n is None:
+        return "—"
+    if n == float("inf"):
+        return "∞"
+    trieu = n / 1_000_000
+    if trieu == int(trieu):
+        return f"{int(trieu):,}".replace(",", ".") + " triệu"
+    return f"{trieu:,.1f}".replace(",", ".") + " triệu"
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +386,7 @@ class ReelView(discord.ui.LayoutView):
         is_boss: bool = False,
         energy: int = 0,
         max_energy: int = ENERGY_BASE,
+        skills: Optional[list[Optional[Skill]]] = None,
     ):
         super().__init__(timeout=REEL_TIMEOUT_SECONDS)
         self.member = member
@@ -391,6 +412,15 @@ class ReelView(discord.ui.LayoutView):
         self.finished = False
         self.message: Optional[discord.Message] = None
         self._lock = asyncio.Lock()  # chặn _on_pull và _idle_tick edit chồng lên nhau
+
+        # -- Kỹ năng (skill) — tối đa SKILL_SLOTS ô, mỗi skill dùng 1 lần/ván ---
+        self.skills: list[Optional[Skill]] = list(skills or [])
+        self.skills_used: set[str] = set()
+        self.tension_slow_until: float = 0.0   # timestamp, còn hiệu lực "slow_tension" tới lúc này
+        self.tension_slow_factor: float = 1.0    # hệ số nhân độ căng dây khi đang có "slow_tension"
+        self._cid_skills: dict[str, str] = {
+            s.key: f"reel_skill_{s.key}_{uuid.uuid4().hex}" for s in self.skills if s
+        }
 
         # QUAN TRỌNG: custom_id CỐ ĐỊNH cho nút "Kéo!", tạo 1 LẦN DUY NHẤT ở
         # đây (không tạo lại mỗi lần _render()). Discord bắt buộc mỗi nút phải
@@ -424,7 +454,8 @@ class ReelView(discord.ui.LayoutView):
             if idle_for < IDLE_TICK_SECONDS:
                 return  # vừa có thao tác gần đây, chưa cần cộng thêm
 
-            self.tension += IDLE_TENSION_PER_SECOND * idle_for
+            slow_mult2 = self.tension_slow_factor if now < self.tension_slow_until else 1.0
+            self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult2
             self.last_action_at = now
 
             if self.tension >= self.tension_max:
@@ -467,13 +498,21 @@ class ReelView(discord.ui.LayoutView):
         container.add_item(discord.ui.Separator())
 
         progress_ratio = min(1.0, self.progress / self.target) if self.target else 0.0
+        hp_ratio = 1.0 - progress_ratio
+        hp_current = max(0, round(self.target - self.progress))
+        hp_max = max(1, round(self.target))
         tension_ratio = min(1.0, self.tension / self.tension_max)
         energy_ratio = (self.energy / self.max_energy) if self.max_energy else 0.0
+        now = time.time()
+        slow_note = ""
+        if now < self.tension_slow_until:
+            slow_note = f" *(đang làm chậm, còn `{format_time_left(self.tension_slow_until - now)}`)*"
         container.add_item(discord.ui.TextDisplay(
+            f"**🐟 Cá:** `{self.fish.name}`\n"
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
             f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
-            f"Tiến độ kéo cá: `{make_bar(progress_ratio)}` {progress_ratio:.0%}\n"
-            f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}\n"
+            f"❤️ Máu cá: `{make_bar(hp_ratio)}` {hp_current:,}/{hp_max:,}\n"
+            f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}{slow_note}\n"
             f"🔋 Thể lực: `{make_bar(energy_ratio)}` {self.energy}/{self.max_energy}"
         ))
         container.add_item(discord.ui.Separator())
@@ -485,6 +524,22 @@ class ReelView(discord.ui.LayoutView):
         btn.callback = self._on_pull
         row.add_item(btn)
         container.add_item(row)
+
+        active_skills = [s for s in self.skills if s]
+        if active_skills:
+            skill_row = discord.ui.ActionRow()
+            for skill in active_skills:
+                used = skill.key in self.skills_used
+                can_afford = self.energy >= skill.energy_cost
+                skill_btn = discord.ui.Button(
+                    label=f"{skill.emoji} {skill.name} ({skill.energy_cost}🔋)",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=used or not can_afford,
+                    custom_id=self._cid_skills[skill.key],
+                )
+                skill_btn.callback = self._skill_callback(skill)
+                skill_row.add_item(skill_btn)
+            container.add_item(skill_row)
 
         self.add_item(container)
 
@@ -529,8 +584,9 @@ class ReelView(discord.ui.LayoutView):
             dmg = self.rod.pull * random.uniform(0.9, 1.3) * (1 + self.luck_bonus * 0.5)
             self.progress += dmg
 
-            tension_gain = 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4)
-            self.tension += max(1.0, tension_gain)
+            slow_mult = self.tension_slow_factor if now < self.tension_slow_until else 1.0
+            base_tension_gain = max(1.0, 100.0 / random.uniform(6.0, 11.0) * (1 - self.luck_bonus * 0.4))
+            self.tension += base_tension_gain * slow_mult
 
             self.energy -= 1
             self.energy_spent += 1
@@ -545,6 +601,56 @@ class ReelView(discord.ui.LayoutView):
                 self._idle_tick.stop()
                 await self._finish(interaction, success=False)
                 return
+
+            self._render()
+            try:
+                await interaction.response.edit_message(view=self)
+            except discord.HTTPException:
+                if self.message:
+                    try:
+                        await self.message.edit(view=self)
+                    except discord.HTTPException:
+                        pass
+
+    def _skill_callback(self, skill: Skill):
+        async def _cb(interaction: discord.Interaction) -> None:
+            await self._on_skill(interaction, skill)
+        return _cb
+
+    async def _on_skill(self, interaction: discord.Interaction, skill: Skill) -> None:
+        if self.finished:
+            await interaction.response.defer()
+            return
+        if not await self._guard(interaction):
+            return
+        if skill.key in self.skills_used:
+            await interaction.response.send_message(
+                f"⚠️ Bạn đã dùng **{skill.name}** trong ván câu này rồi!", ephemeral=True,
+            )
+            return
+        if self.energy < skill.energy_cost:
+            await interaction.response.send_message(
+                f"🔋 Không đủ thể lực để dùng **{skill.name}** (cần `{skill.energy_cost}`)!",
+                ephemeral=True,
+            )
+            return
+
+        async with self._lock:
+            if self.finished:  # có thể vừa bị idle_tick kết thúc trong lúc chờ lock
+                await interaction.response.defer()
+                return
+
+            now = time.time()
+            self.last_action_at = now
+            self.energy -= skill.energy_cost
+            self.energy_spent += skill.energy_cost
+            self.skills_used.add(skill.key)
+
+            if skill.effect == "reduce_tension":
+                self.tension = max(0.0, self.tension - self.tension_max * skill.value)
+            elif skill.effect == "slow_tension":
+                self.tension_slow_until = now + skill.duration_s
+                self.tension_slow_factor = 1.0 - skill.value
 
             self._render()
             try:
@@ -634,7 +740,7 @@ class RodShopView(discord.ui.LayoutView):
         ))
 
         price_line = (
-            f"{E.GOLD} Giá: `{fmt_vang(rod.price_vang)}` Vàng" if rod.price_vang is not None
+            f"{E.GOLD} Giá: `{fmt_gia_trieu(rod.price_vang)}` Vàng" if rod.price_vang is not None
             else "🔒 Không bán trực tiếp — xem cách nhận bên dưới"
         )
         stats = (
@@ -723,7 +829,7 @@ class RodShopView(discord.ui.LayoutView):
             return
         if data["vang"] < (rod.price_vang or 0):
             await interaction.followup.send(
-                f"Bạn không đủ Vàng! Cần `{fmt_vang(rod.price_vang)}` Vàng.", ephemeral=True
+                f"Bạn không đủ Vàng! Cần `{fmt_gia_trieu(rod.price_vang)}` Vàng.", ephemeral=True
             )
             return
         data["vang"] -= rod.price_vang
@@ -743,6 +849,172 @@ class RodShopView(discord.ui.LayoutView):
         await interaction.followup.send(
             f"Đã trang bị {rod.emoji} `{rod.name}`!", ephemeral=True
         )
+
+
+# ---------------------------------------------------------------------------
+# Shop kỹ năng câu cá — Components V2, phân trang từng skill. Mỗi người có
+# SKILL_SLOTS (3) ô trang bị; bấm vào 1 ô để trang bị/gỡ skill đang xem
+# khỏi ô đó (skill đã ở ô khác sẽ tự được gỡ ra trước khi gán ô mới).
+# ---------------------------------------------------------------------------
+class SkillShopView(discord.ui.LayoutView):
+    def __init__(self, user_id: int, data: dict, index: int = 0):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.index = index
+        self._cid_prev = f"skillshop_prev_{uuid.uuid4().hex}"
+        self._cid_next = f"skillshop_next_{uuid.uuid4().hex}"
+        self._cid_buy = f"skillshop_buy_{uuid.uuid4().hex}"
+        self._cid_slots = [f"skillshop_slot{i}_{uuid.uuid4().hex}" for i in range(SKILL_SLOTS)]
+        self._render(data)
+
+    @classmethod
+    async def create(cls, user_id: int, index: int = 0) -> "SkillShopView":
+        data = await aget_user_data(user_id)
+        return cls(user_id, data, index)
+
+    def _render(self, data: dict) -> None:
+        self.clear_items()
+        skill = SKILL_SHOP[self.index]
+        unlocked = set(data.get("unlocked_skills", []))
+        owned = skill.key in unlocked
+        equipped_keys = (list(data.get("equipped_skills", [None] * SKILL_SLOTS))
+                         + [None] * SKILL_SLOTS)[:SKILL_SLOTS]
+
+        container = discord.ui.Container(accent_colour=discord.Colour.teal())
+        container.add_item(discord.ui.TextDisplay(
+            f"## {skill.emoji} {skill.name}  ({self.index + 1}/{len(SKILL_SHOP)})"
+        ))
+
+        if skill.effect == "reduce_tension":
+            effect_line = f"Trừ ngay `{skill.value:.0%}` độ căng dây khi dùng."
+        else:
+            effect_line = f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`."
+
+        stats = (
+            f"{skill.description}\n"
+            f"**Hiệu ứng:** {effect_line}\n"
+            f"**Thể lực tiêu hao:** `{skill.energy_cost}` mỗi lần dùng (1 lần/ván câu)\n"
+            f"{E.GOLD} Giá: `{fmt_gia_trieu(skill.price_vang)}` Vàng"
+        )
+        container.add_item(discord.ui.TextDisplay(stats))
+        container.add_item(discord.ui.Separator())
+
+        nav_row = discord.ui.ActionRow()
+        prev_btn = discord.ui.Button(
+            label="◀ Trước", style=discord.ButtonStyle.secondary,
+            disabled=self.index == 0, custom_id=self._cid_prev,
+        )
+        prev_btn.callback = self._go_prev
+        next_btn = discord.ui.Button(
+            label="Sau ▶", style=discord.ButtonStyle.secondary,
+            disabled=self.index == len(SKILL_SHOP) - 1, custom_id=self._cid_next,
+        )
+        next_btn.callback = self._go_next
+        nav_row.add_item(prev_btn)
+        nav_row.add_item(next_btn)
+        container.add_item(nav_row)
+
+        action_row = discord.ui.ActionRow()
+        if not owned:
+            buy_btn = discord.ui.Button(
+                label=f"Mở Khóa ({fmt_gia_trieu(skill.price_vang)})",
+                style=discord.ButtonStyle.primary,
+                disabled=data["vang"] < skill.price_vang,
+                custom_id=self._cid_buy,
+            )
+            buy_btn.callback = self._buy
+            action_row.add_item(buy_btn)
+        else:
+            for i in range(SKILL_SLOTS):
+                in_slot = equipped_keys[i] == skill.key
+                slot_btn = discord.ui.Button(
+                    label=f"{'✅ ' if in_slot else ''}Ô {i + 1}",
+                    style=discord.ButtonStyle.success if in_slot else discord.ButtonStyle.secondary,
+                    custom_id=self._cid_slots[i],
+                )
+                slot_btn.callback = self._make_slot_cb(i)
+                action_row.add_item(slot_btn)
+        container.add_item(action_row)
+
+        if owned:
+            equipped_line = " · ".join(
+                f"Ô{i + 1}: {SKILLS[k].emoji} {SKILLS[k].name}" if k in SKILLS else f"Ô{i + 1}: —"
+                for i, k in enumerate(equipped_keys)
+            )
+            container.add_item(discord.ui.TextDisplay(
+                f"_Bấm 1 ô để trang bị/gỡ kỹ năng này khỏi ô đó._\n**Đang trang bị:** {equipped_line}"
+            ))
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Đây không phải shop kỹ năng của bạn!", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _go_prev(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        self.index = max(0, self.index - 1)
+        data = await aget_user_data(self.user_id)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
+
+    async def _go_next(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        self.index = min(len(SKILL_SHOP) - 1, self.index + 1)
+        data = await aget_user_data(self.user_id)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
+
+    async def _buy(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        skill = SKILL_SHOP[self.index]
+        data = await aget_user_data(self.user_id)
+        unlocked = set(data.get("unlocked_skills", []))
+        if skill.key in unlocked:
+            await interaction.followup.send("Bạn đã sở hữu kỹ năng này rồi!", ephemeral=True)
+            return
+        if data["vang"] < skill.price_vang:
+            await interaction.followup.send(
+                f"Bạn không đủ Vàng! Cần `{fmt_gia_trieu(skill.price_vang)}` Vàng.", ephemeral=True
+            )
+            return
+        data["vang"] -= skill.price_vang
+        unlocked.add(skill.key)
+        data["unlocked_skills"] = list(unlocked)
+        await asave_user_data(self.user_id, data)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
+
+    def _make_slot_cb(self, slot_index: int):
+        async def _cb(interaction: discord.Interaction) -> None:
+            if not await self._guard(interaction):
+                return
+            await interaction.response.defer()
+            skill = SKILL_SHOP[self.index]
+            data = await aget_user_data(self.user_id)
+            equipped = (list(data.get("equipped_skills", [None] * SKILL_SLOTS))
+                        + [None] * SKILL_SLOTS)[:SKILL_SLOTS]
+            if equipped[slot_index] == skill.key:
+                equipped[slot_index] = None  # bấm lại ô đang chứa skill này -> gỡ ra
+            else:
+                # gỡ skill này khỏi ô cũ (nếu có) trước khi gán vào ô mới
+                equipped = [None if k == skill.key else k for k in equipped]
+                equipped[slot_index] = skill.key
+            data["equipped_skills"] = equipped
+            await asave_user_data(self.user_id, data)
+            self._render(data)
+            await interaction.edit_original_response(view=self)
+        return _cb
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1345,7 @@ class CauCaVanCan(commands.Cog):
         level = data.get("level", 1)
         energy = data.get("energy", 0)
         max_energy = max_energy_for_level(level)
+        skills = equipped_skill_objects(data)
 
         async def on_finish(success: Optional[bool], energy_used: int) -> dict:
             """Chạy khi ván câu kết thúc (bắt được / đứt dây / hết giờ).
@@ -1118,7 +1391,7 @@ class CauCaVanCan(commands.Cog):
         view = ReelView(
             interaction.user, rod, fish, luck_bonus, rank_label, rank_badge,
             bait_name, bait_time_left, on_finish,
-            is_boss=is_boss, energy=energy, max_energy=max_energy,
+            is_boss=is_boss, energy=energy, max_energy=max_energy, skills=skills,
         )
         view.message = await interaction.followup.send(view=view, wait=True)
 
@@ -1132,6 +1405,12 @@ class CauCaVanCan(commands.Cog):
     async def shop_can(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         view = await RodShopView.create(user_id=interaction.user.id)
+        await interaction.followup.send(view=view)
+
+    @app_commands.command(name="shop_kỹ_năng", description="Xem, mở khóa và trang bị kỹ năng câu cá")
+    async def shop_ky_nang(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        view = await SkillShopView.create(user_id=interaction.user.id)
         await interaction.followup.send(view=view)
 
     @app_commands.command(name="bán", description="Xem kho cá và bán cá lấy Vàng")
@@ -1204,6 +1483,13 @@ class CauCaVanCan(commands.Cog):
             f"🔋 **Thể lực:** `{energy}/{max_energy}`\n"
             f"`{make_bar(energy / max_energy if max_energy else 0)}`"
         ))
+        container.add_item(discord.ui.Separator())
+        equipped = equipped_skill_objects(data)
+        skill_lines = " · ".join(
+            f"Ô{i + 1}: {s.emoji} {s.name}" if s else f"Ô{i + 1}: —"
+            for i, s in enumerate(equipped)
+        )
+        container.add_item(discord.ui.TextDisplay(f"🧩 **Kỹ năng đang trang bị:** {skill_lines}"))
         view.add_item(container)
         await interaction.followup.send(view=view, ephemeral=True)
 
