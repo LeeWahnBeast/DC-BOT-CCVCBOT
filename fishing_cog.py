@@ -52,8 +52,8 @@ from discord.ext import commands, tasks
 
 from firebase_db import OWNER_IDS, aget_user_data, asave_user_data
 from fish_data import (
-    ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, TIERS, FishSpecies,
-    tiers_unlocked_for_pull,
+    ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, MAP_BY_KEY, MAPS,
+    TIERS, FishSpecies, fish_in_map, tiers_unlocked_for_pull,
 )
 from rod_data import DEFAULT_ROD_KEY, RODS, ROD_LIST, Rod
 
@@ -202,18 +202,33 @@ def apply_energy_regen(data: dict) -> dict:
     return data
 
 
-def roll_fish(rod: Rod) -> FishSpecies:
+def roll_fish(rod: Rod, map_key: Optional[str] = None) -> FishSpecies:
     """Chọn 1 con cá theo cấp mà lực kéo của cần hiện có thể tiếp cận.
     Cấp cao hơn có trọng số random thấp hơn (khó gặp hơn); trong 1 cấp,
-    cá giá cao hơn cũng hiếm hơn."""
+    cá giá cao hơn cũng hiếm hơn.
+
+    Nếu `map_key` được chỉ định: chỉ roll trong số cá thuộc khu vực đó.
+    Nếu khu vực đó chưa có cá nào tương thích với lực kéo hiện tại, tự
+    động rơi về roll không giới hạn khu vực để không bao giờ "câu hụt".
+    """
     tiers = tiers_unlocked_for_pull(rod.pull)
     if not tiers:
         tiers = [t for t in TIERS if FISH_BY_TIER[t.key]][:1]
 
+    def pool_for(tier_key: str) -> list[FishSpecies]:
+        if map_key is None:
+            return FISH_BY_TIER[tier_key]
+        return [f for f in FISH_BY_TIER[tier_key] if f.map_key == map_key]
+
+    if map_key is not None:
+        tiers = [t for t in tiers if pool_for(t.key)]
+        if not tiers:  # khu vực chưa có dữ liệu cá cho lực kéo này -> bỏ lọc map
+            return roll_fish(rod, map_key=None)
+
     tier_weights = [1.0 / (i + 1) for i in range(len(tiers))]
     tier = random.choices(tiers, weights=tier_weights)[0]
 
-    pool = FISH_BY_TIER[tier.key]
+    pool = pool_for(tier.key)
     max_price = max(f.price for f in pool)
     fish_weights = [ (max_price / f.price) ** 0.5 for f in pool ]
     return random.choices(pool, weights=fish_weights)[0]
@@ -919,6 +934,90 @@ class SellView(discord.ui.LayoutView):
 
 
 # ---------------------------------------------------------------------------
+# Chọn khu vực câu (map) — Select đơn, chỉ hiện các map người chơi đã đủ
+# cấp độ mở khóa (unlock_level). Lưu lựa chọn vào data["current_map"].
+# ---------------------------------------------------------------------------
+class MapSelectView(discord.ui.LayoutView):
+    def __init__(self, user_id: int, data: dict):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self._cid_select = f"map_select_{uuid.uuid4().hex}"
+        self._cid_clear = f"map_clear_{uuid.uuid4().hex}"
+        self._render(data)
+
+    @classmethod
+    async def create(cls, user_id: int) -> "MapSelectView":
+        data = await aget_user_data(user_id)
+        return cls(user_id, data)
+
+    def _render(self, data: dict) -> None:
+        self.clear_items()
+        level = data.get("level", 1)
+        current = data.get("current_map")
+        unlocked = [m for m in MAPS if level >= m.unlock_level]
+        locked = [m for m in MAPS if level < m.unlock_level]
+
+        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
+        container.add_item(discord.ui.TextDisplay("## 🗺️ Chọn Khu Vực Câu"))
+        container.add_item(discord.ui.Separator())
+
+        current_label = "🌐 Tất cả khu vực (mặc định)"
+        if current and current in MAP_BY_KEY:
+            m = MAP_BY_KEY[current]
+            current_label = f"{m.emoji} {m.label}"
+        lines = [f"**Đang chọn:** {current_label}"]
+        if locked:
+            lock_lines = "\n".join(
+                f"🔒 {m.emoji} {m.label} — mở ở Lv.{m.unlock_level}" for m in locked
+            )
+            lines.append(f"\n**Chưa mở khóa:**\n{lock_lines}")
+        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        container.add_item(discord.ui.Separator())
+
+        options = [
+            discord.SelectOption(
+                label="Tất cả khu vực", description="Câu ngẫu nhiên, không giới hạn khu vực",
+                emoji="🌐", value="__all__", default=current is None,
+            )
+        ]
+        for m in unlocked:
+            options.append(discord.SelectOption(
+                label=m.label, emoji=m.emoji, value=m.key,
+                description=f"{len(fish_in_map(m.key))} loài cá" if fish_in_map(m.key) else "Chưa có dữ liệu cá",
+                default=(current == m.key),
+            ))
+
+        select = discord.ui.Select(
+            placeholder="Chọn khu vực muốn câu...",
+            custom_id=self._cid_select,
+            options=options[:25],
+        )
+        select.callback = self._on_select
+        row = discord.ui.ActionRow()
+        row.add_item(select)
+        container.add_item(row)
+
+        self.add_item(container)
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Đây không phải lựa chọn của bạn!", ephemeral=True)
+            return False
+        return True
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        chosen = interaction.data["values"][0]
+        data = await aget_user_data(self.user_id)
+        data["current_map"] = None if chosen == "__all__" else chosen
+        await asave_user_data(self.user_id, data)
+        self._render(data)
+        await interaction.edit_original_response(view=self)
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 class CauCaVanCan(commands.Cog):
@@ -968,7 +1067,7 @@ class CauCaVanCan(commands.Cog):
         data["last_cast"] = now
         await asave_user_data(interaction.user.id, data)
 
-        fish = roll_fish(rod)
+        fish = roll_fish(rod, map_key=data.get("current_map"))
         is_boss = fish.key in BOSS_FISH_KEYS
         rank_label, rank_badge = rank_for_score(data["score"])
         level = data.get("level", 1)
@@ -1022,6 +1121,12 @@ class CauCaVanCan(commands.Cog):
             is_boss=is_boss, energy=energy, max_energy=max_energy,
         )
         view.message = await interaction.followup.send(view=view, wait=True)
+
+    @app_commands.command(name="chọn_map", description="Chọn khu vực câu cá")
+    async def chon_map(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        view = await MapSelectView.create(user_id=interaction.user.id)
+        await interaction.followup.send(view=view)
 
     @app_commands.command(name="shop_cần", description="Xem và mở khóa cần câu")
     async def shop_can(self, interaction: discord.Interaction) -> None:
