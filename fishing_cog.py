@@ -96,7 +96,7 @@ WEATHER_CHANNEL_ID = 1543098261705855096
 # ---------------------------------------------------------------------------
 class E:
     TOP1 = "🥇"
-    TOP3 = "🏆"
+    TOP3 = "<:Cup:1543423912778661959>"
     GOLD = "<:coin:1543412753224441876>"
     # Icon custom "túi mồi câu" — dùng ở mọi nơi hiển thị mồi câu (thay 🪱).
     BAIT = "<:bag:1543415046716129300>"
@@ -104,7 +104,7 @@ class E:
     # Emoji custom "Năng lượng" — thay cho biểu tượng pin 🔋 mặc định ở mọi
     # nơi hiển thị thanh thể lực/năng lượng cho người chơi.
     ENERGY = "<:Energy:1543412946040791162>"
-    JUNK = "🗑️"
+    JUNK = "<:rac:1543422196318216292>"
     # Icon custom mới — cân nặng / cần câu / máu / vận may.
     WEIGHT = "<:Weight:1543413303118667886>"
     ROD = "<:FishingRod:1543413835183030292>"
@@ -132,7 +132,7 @@ RANK_TIERS = [
     (18_000, "Bán Thánh Câu Cá", "⭐"),
     (28_000, "Thánh Nhân Câu Cá", "🌟"),
     (42_000, "Bán Thần Câu Cá", "🔥"),
-    (62_000, "Thần Tiên Câu Cá", "👑"),
+    (62_000, "Thần Tiên Câu Cá", "<:boss:1543420929512841347>"),
     (90_000, "Huyền Thoại Câu Cá", "🐉"),
 ]
 
@@ -402,11 +402,16 @@ BAR_RIGHT_EMPTY = "<:2881lb3g:1543417700729094204>"
 BAR_RIGHT_FULL = "<:3166lb4g:1543417744995782708>"
 
 
-def make_bar(ratio: float, size: int = 10) -> str:
+def make_bar(ratio: float, size: int = 8) -> str:
     """Vẽ thanh tiến trình bằng emoji custom (đầu trái/đầu phải bo tròn +
     đoạn giữa, xem BAR_* ở trên) thay cho ký tự khối █/░ cũ. `size` = tổng
-    số ô (tính cả 2 ô đầu-cuối), tối thiểu 2. KHÔNG bọc kết quả hàm này
-    trong dấu backtick khi ghép vào tin nhắn (xem ghi chú ở BAR_* )."""
+    số ô (tính cả 2 ô đầu-cuối), tối thiểu 2 — mặc định 8 để LUÔN gói gọn
+    trong 1 dòng trên màn hình điện thoại (thử ở 10 ô từng bị Discord ngắt
+    dòng giữa chuỗi emoji trên mobile, làm rớt ô cuối xuống dòng dưới).
+    KHÔNG bọc kết quả hàm này trong dấu backtick khi ghép vào tin nhắn
+    (xem ghi chú ở BAR_*), và LUÔN đặt bar trên 1 DÒNG RIÊNG (không để
+    chung dòng với nhãn chữ phía trước) để bar được bắt đầu từ đầu dòng,
+    có tối đa khoảng trống trước khi bị ngắt dòng."""
     ratio = max(0.0, min(1.0, ratio))
     size = max(2, size)
     filled = max(0, min(size, round(ratio * size)))
@@ -515,10 +520,10 @@ def build_success_view(
     if is_junk:
         header = f"{E.JUNK} **CÂU PHẢI RÁC RỒI...** {E.JUNK}\n" + header
     elif is_boss:
-        header = f"👑🐉 **ĐÃ CÂU ĐƯỢC BOSS!** 👑🐉\n" + header
+        header = f"<:boss:1543420929512841347>🐉 **ĐÃ CÂU ĐƯỢC BOSS!** <:boss:1543420929512841347>🐉\n" + header
     if bait_name:
         header += (
-            f"\n✨ **Mồi đang dùng:** {E.BAIT} **{bait_name}** "
+            f"\n<:ngoisao:1543423278473805825> **Mồi đang dùng:** {E.BAIT} **{bait_name}** "
             f"(+{bait_luck:.0%} may mắn) - Còn `{bait_time_left}`"
         )
     container.add_item(discord.ui.TextDisplay(header))
@@ -531,7 +536,7 @@ def build_success_view(
         ))
     else:
         container.add_item(discord.ui.TextDisplay(
-            f"**🎉 Chúc mừng bạn đã câu được:**\n"
+            f"**<:chucmung:1543422891960442990> Chúc mừng bạn đã câu được:**\n"
             f"**Tên cá:** {fish.name}\n"
             f"**Khối lượng:** `{fish.weight_label}`\n"
             f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / con"
@@ -541,9 +546,9 @@ def build_success_view(
         if is_junk:
             exp_line = f"{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
         else:
-            exp_line = f"✨ **+{level_info['exp_gained']} EXP**"
+            exp_line = f"<:xp:1543420200119046244> **+{level_info['exp_gained']} EXP**"
             if level_info.get("leveled_up"):
-                exp_line += f"\n🎉 **LÊN CẤP {level_info['new_level']}!** Năng lượng đã được hồi đầy."
+                exp_line += f"\n<:chucmung:1543422891960442990> **LÊN CẤP {level_info['new_level']}!** Năng lượng đã được hồi đầy."
             exp_line += f"\n{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
         container.add_item(discord.ui.TextDisplay(exp_line))
     container.add_item(discord.ui.Separator())
@@ -577,7 +582,7 @@ def build_weather_view(weather: Weather, expires_at: Optional[float] = None) -> 
         sign = "+" if pct > 0 else ""
         effect_lines.append(f"{E.ROD} Tốc độ căng dây câu: `{sign}{pct:.0%}`")
     if weather.boss_weight_mult != 1.0:
-        effect_lines.append(f"👑 Tỷ lệ gặp cá quý hiếm/boss: `x{weather.boss_weight_mult:.1f}`")
+        effect_lines.append(f"<:boss:1543420929512841347> Tỷ lệ gặp cá quý hiếm/boss: `x{weather.boss_weight_mult:.1f}`")
     container.add_item(discord.ui.TextDisplay("\n".join(effect_lines)))
 
     if expires_at:
@@ -742,9 +747,9 @@ class ReelView(discord.ui.LayoutView):
         if self.is_junk:
             header = f"{E.JUNK} **Có vẻ chỉ là rác trôi...** {E.JUNK}\n" + header
         elif self.is_boss:
-            header = f"👑🐉 **BOSS XUẤT HIỆN: {self.fish.name}!** 👑🐉\n" + header
+            header = f"<:boss:1543420929512841347>🐉 **BOSS XUẤT HIỆN: {self.fish.name}!** <:boss:1543420929512841347>🐉\n" + header
         if self.bait_name:
-            header += f"\n✨ Mồi: {E.BAIT} **{self.bait_name}** - Còn `{self.bait_time_left}`"
+            header += f"\n<:ngoisao:1543423278473805825> Mồi: {E.BAIT} **{self.bait_name}** - Còn `{self.bait_time_left}`"
         if self.weather:
             header += f"\n{self.weather.emoji} Thời tiết: **{self.weather.name}**"
         container.add_item(discord.ui.TextDisplay(header))
@@ -765,9 +770,12 @@ class ReelView(discord.ui.LayoutView):
             f"**{catch_label}** `{self.fish.name}`\n"
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
             f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
-            f"{E.HEALTH} Máu cá: {make_bar(hp_ratio)} `{hp_current:,}/{hp_max:,}`\n"
-            f"Độ căng dây câu: {make_bar(tension_ratio)} `{tension_ratio:.0%}`{slow_note}\n"
-            f"{E.ENERGY} Năng lượng: {make_bar(energy_ratio)} `{self.energy}/{self.max_energy}`"
+            f"{E.HEALTH} Máu cá: `{hp_current:,}/{hp_max:,}`\n"
+            f"{make_bar(hp_ratio)}\n"
+            f"Độ căng dây câu: `{tension_ratio:.0%}`{slow_note}\n"
+            f"{make_bar(tension_ratio)}\n"
+            f"{E.ENERGY} Năng lượng: `{self.energy}/{self.max_energy}`\n"
+            f"{make_bar(energy_ratio)}"
         ))
         container.add_item(discord.ui.Separator())
 
@@ -1478,7 +1486,7 @@ class BaitShopView(discord.ui.LayoutView):
         bait_data = data.get("bait") or {}
         if bait_data.get("expires_at", 0) > time.time():
             container.add_item(discord.ui.TextDisplay(
-                f"✨ Đang dùng: {E.BAIT} **{bait_data.get('name', '?')}** "
+                f"<:ngoisao:1543423278473805825> Đang dùng: {E.BAIT} **{bait_data.get('name', '?')}** "
                 f"(+{bait_data.get('luck', 0):.0%} may mắn) — "
                 f"còn `{format_time_left(bait_data['expires_at'] - time.time())}`"
             ))
@@ -2130,7 +2138,7 @@ class LeaderboardView(discord.ui.LayoutView):
     def _render(self) -> None:
         self.clear_items()
         container = discord.ui.Container(accent_colour=discord.Colour.gold())
-        container.add_item(discord.ui.TextDisplay("# 🏆 Bảng Xếp Hạng Câu Cá Vạn Cân"))
+        container.add_item(discord.ui.TextDisplay("# <:Cup:1543423912778661959> Bảng Xếp Hạng Câu Cá Vạn Cân"))
 
         tab_row = discord.ui.ActionRow()
         for t in self.TABS:
@@ -2439,7 +2447,7 @@ class CauCaVanCan(commands.Cog):
         ))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
-            f"📈 **Cấp:** `{level}` — EXP: `{exp}/{exp_needed}`\n"
+            f"<:xp:1543420200119046244> **Cấp:** `{level}` — EXP: `{exp}/{exp_needed}`\n"
             f"{make_bar(exp / exp_needed if exp_needed else 0)}\n"
             f"{E.ENERGY} **Năng lượng:** `{energy}/{max_energy}`\n"
             f"{make_bar(energy / max_energy if max_energy else 0)}"

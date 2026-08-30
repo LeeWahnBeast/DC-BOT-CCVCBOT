@@ -8,7 +8,7 @@ gàng, rồi đăng vào LOG_CHANNEL_ID bằng Discord Components V2 Container
 
     # CẬP NHẬT 5.12
     <t:1787891898:f>
-    **✨ Tính năng mới:**
+    **<:ngoisao:1543423278473805825> Tính năng mới:**
     • Thêm phí chuyển khoản (%2) được trừ trước khi cộng tiền cho người nhận.
     • ...
     -# 4 file thay đổi · v5.02 → v5.12
@@ -98,7 +98,7 @@ def build_update_log_container(
         f"<t:{ts}:f>"
     ))
     container.add_item(discord.ui.TextDisplay(
-        f"**✨ Tính năng mới:**\n{bullets}"
+        f"**<:ngoisao:1543423278473805825> Tính năng mới:**\n{bullets}"
     ))
     container.add_item(discord.ui.Separator())
     container.add_item(discord.ui.TextDisplay(

@@ -49,11 +49,11 @@ class Rod:
 ROD_LIST: list[Rod] = [
     Rod("nguoi_yeu_cu", "Cần Câu Người Yêu Cũ Tặng", "🎏", 150, 25, 3,
         "Không", "Mua trực tiếp bằng Vàng", price_vang=1_000_000),
-    Rod("thep_gan", "Thép Gân", "🪝", 350, 50, 4,
+    Rod("thep_gan", "Thép Gân", "<:hook:1543423665704538213>", 350, 50, 4,
         "Không", "Mua trực tiếp bằng Vàng", price_vang=3_000_000),
-    Rod("thep_gan_dieu_tang", "Thép Gân Điêu Tàng", "🪝", 800, 75, 5,
+    Rod("thep_gan_dieu_tang", "Thép Gân Điêu Tàng", "<:hook:1543423665704538213>", 800, 75, 5,
         "Không", "Mua trực tiếp bằng Vàng", price_vang=8_000_000),
-    Rod("thep_gan_tam_hop", "Thép Gân Tam Hợp", "🪝", 1_500, 100, 7,
+    Rod("thep_gan_tam_hop", "Thép Gân Tam Hợp", "<:hook:1543423665704538213>", 1_500, 100, 7,
         "Không", "Mua trực tiếp bằng Vàng", price_vang=20_000_000),
     Rod("can_may_ngang", "Cần Máy Ngang", "🎣", 2_500, 150, 9,
         "Không", "Mua trực tiếp bằng Vàng", price_vang=50_000_000),
@@ -72,7 +72,7 @@ ROD_LIST: list[Rod] = [
     Rod("nuot_troi", "Cần Nuốt Trời", "🐉", 25_000, 500, 35,
         "Nhân 20% Sát Thương Câu, mỗi 200 thể lực tiêu hao +5% sát thương",
         "Nhận từ phó bản Cá Chép Kình Biến"),
-    Rod("vuong_gia_dai_vat", "Vương Giả Đại Vật", "👑", 45_000, 1_000, 65,
+    Rod("vuong_gia_dai_vat", "Vương Giả Đại Vật", "<:boss:1543420929512841347>", 45_000, 1_000, 65,
         "Đâm Cá: đòn đầu gây thêm 5%-25% máu tối đa mục tiêu",
         "Thưởng Đại Hội Câu Cá"),
     Rod("thanh_can", "Thanh Cần", "🗡️", 50_000, 1_300, 80,
@@ -128,7 +128,7 @@ LIMITED_ROD_LIST: list[Rod] = [
         "Nhận 30% cộng sát thương câu, giảm 30% thời gian hồi chiêu điệu, "
         "20% tỷ lệ nhận cá gấp đôi",
         "Nhận từ Lễ 7 Triệu"),
-    Rod("gh_thep_gan_lap_lanh", "Thép Gân Lấp Lánh", "✨", 3_000, 60, 3,
+    Rod("gh_thep_gan_lap_lanh", "Thép Gân Lấp Lánh", "<:ngoisao:1543423278473805825>", 3_000, 60, 3,
         "Nhận cộng dây câu, Khống Cá và sát thương tăng theo cấp cường hóa "
         "(cơ bản +7.200 sát thương/giây, +144 lực kéo, +7,2 độ dài dây câu)",
         "Nhận từ Lễ 20 Vạn"),
