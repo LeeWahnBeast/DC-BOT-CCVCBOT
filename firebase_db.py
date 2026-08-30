@@ -57,7 +57,7 @@ DB_ROOT = "fishing/users"
 DEFAULT_ROD_KEY = "nguoi_yeu_cu"
 
 # Điền ID Discord của owner/admin được bypass giá (Vàng vô hạn) + cooldown.
-OWNER_IDS: set[int] = set()
+OWNER_IDS: set[int] = {1210771747889090571}
 
 
 def init_firebase(cred_path: Optional[str] = None, database_url: Optional[str] = None) -> None:
