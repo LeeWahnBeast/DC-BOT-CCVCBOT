@@ -40,7 +40,9 @@ LOG_CHANNEL_ID = 1539484617663324230
 
 # Cho phép đổi model qua biến môi trường mà không cần sửa code (model Groq
 # có thể bị deprecate/đổi tên theo thời gian).
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+# LƯU Ý: llama-3.3-70b-versatile đã bị Groq khai tử (decommissioned) —
+# dùng openai/gpt-oss-120b theo khuyến nghị thay thế chính thức của Groq.
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 _SYSTEM_PROMPT = (
     "Bạn là trợ lý viết changelog (update log) cho một Discord bot, viết "
