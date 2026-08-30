@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ông Cương — Trợ thủ câu cá trên Discord</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Source+Sans+3:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --river-night:#0b1e2a;
+    --river-deep:#123244;
+    --foam:#f2ecdc;
+    --foam-dim:#cfc6ac;
+    --brass:#c98a3b;
+    --brass-bright:#e3a75a;
+    --line:rgba(242,236,220,0.14);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:var(--river-night);
+    color:var(--foam);
+    font-family:'Source Sans 3', sans-serif;
+    line-height:1.6;
+    overflow-x:hidden;
+  }
+  .bg-water{
+    position:fixed; inset:0; z-index:-1;
+    background:
+      radial-gradient(ellipse 900px 500px at 15% -10%, rgba(201,138,59,0.10), transparent 60%),
+      radial-gradient(ellipse 700px 600px at 110% 20%, rgba(18,50,68,0.9), transparent 55%),
+      var(--river-night);
+  }
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:28px clamp(20px,6vw,72px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{
+    display:flex; align-items:center; gap:12px;
+    font-family:'Fraunces', serif; font-weight:700; font-size:1.35rem;
+    color:var(--foam); text-decoration:none; letter-spacing:0.01em;
+  }
+  .brand svg{flex:none;}
+  nav a{
+    color:var(--foam-dim); text-decoration:none; font-size:0.95rem;
+    margin-left:28px; transition:color .2s ease;
+  }
+  nav a:hover{color:var(--brass-bright);}
+  main{max-width:920px; margin:0 auto; padding:0 clamp(20px,6vw,72px);}
+
+  .hero{padding:min(14vh,120px) 0 80px; position:relative;}
+  .eyebrow{
+    font-family:'JetBrains Mono', monospace; font-size:0.82rem;
+    color:var(--brass-bright); letter-spacing:0.08em; text-transform:uppercase;
+    display:flex; align-items:center; gap:10px; margin-bottom:22px;
+  }
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--brass-bright);display:inline-block;}
+  h1{
+    font-family:'Fraunces', serif; font-weight:600;
+    font-size:clamp(2.4rem, 6vw, 4rem); line-height:1.05; margin:0 0 24px;
+    max-width:14ch;
+  }
+  h1 em{font-style:italic; color:var(--brass-bright); font-weight:500;}
+  .lede{font-size:1.15rem; color:var(--foam-dim); max-width:52ch; margin:0 0 40px;}
+  .cta-row{display:flex; flex-wrap:wrap; gap:14px;}
+  .btn{
+    font-family:'Source Sans 3', sans-serif; font-weight:600; font-size:0.98rem;
+    padding:14px 26px; border-radius:3px; text-decoration:none;
+    display:inline-flex; align-items:center; gap:10px;
+    border:1px solid transparent; transition:transform .15s ease, background .2s ease;
+  }
+  .btn-primary{background:var(--brass); color:#1a1006;}
+  .btn-primary:hover{background:var(--brass-bright); transform:translateY(-1px);}
+  .btn-ghost{border-color:var(--line); color:var(--foam);}
+  .btn-ghost:hover{border-color:var(--brass-bright); color:var(--brass-bright);}
+
+  .line-divider{position:relative; height:64px; margin:0 0 40px;}
+  .line-divider svg{width:100%; height:100%; display:block;}
+
+  section.feature{
+    display:grid; grid-template-columns:64px 1fr; gap:24px;
+    padding:30px 0; border-top:1px solid var(--line);
+  }
+  section.feature:last-of-type{border-bottom:1px solid var(--line); margin-bottom:80px;}
+  .feature-mark{
+    font-family:'JetBrains Mono', monospace; color:var(--brass-bright);
+    font-size:0.85rem; padding-top:4px;
+  }
+  .feature h3{
+    font-family:'Fraunces', serif; font-weight:600; font-size:1.3rem; margin:0 0 8px;
+  }
+  .feature p{color:var(--foam-dim); margin:0; max-width:58ch;}
+
+  footer{
+    border-top:1px solid var(--line); padding:40px clamp(20px,6vw,72px) 60px;
+    display:flex; flex-wrap:wrap; gap:10px 32px; justify-content:space-between;
+    font-size:0.9rem; color:var(--foam-dim);
+  }
+  footer a{color:var(--foam-dim); text-decoration:underline; text-underline-offset:3px;}
+  footer a:hover{color:var(--brass-bright);}
+
+  @media (max-width:560px){
+    header{padding:22px 20px;}
+    nav a{margin-left:16px; font-size:0.85rem;}
+    section.feature{grid-template-columns:40px 1fr;}
+  }
+</style>
+</head>
+<body>
+<div class="bg-water"></div>
+
+<header>
+  <a class="brand" href="#top">
+    <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+      <path d="M6 15c0-6 5-10.5 10-10.5" stroke="#e3a75a" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="16.2" cy="4.6" r="2.2" stroke="#e3a75a" stroke-width="1.6"/>
+      <path d="M4 22c3-2 6 2 9 0s6 2 9 0" stroke="#f2ecdc" stroke-width="1.3" stroke-linecap="round" opacity="0.6"/>
+    </svg>
+    Ông Cương
+  </a>
+  <nav>
+    <a href="terms.html">Điều khoản</a>
+    <a href="privacy.html">Bảo mật</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="eyebrow">Trợ thủ câu cá cho Discord</div>
+    <h1>Buông cần, chờ<br><em>cá cắn câu</em>.</h1>
+    <p class="lede">
+      Ông Cương là bot Discord chuyên trò chơi câu cá: nâng cấp cần, học kỹ
+      năng, săn cá quý hiếm và cạnh tranh bảng xếp hạng cùng bạn bè ngay
+      trong server.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#">Thêm vào Server</a>
+      <a class="btn btn-ghost" href="terms.html">Đọc Điều khoản Dịch vụ</a>
+    </div>
+  </section>
+
+  <div class="line-divider" aria-hidden="true">
+    <svg viewBox="0 0 920 64" preserveAspectRatio="none">
+      <path d="M0 32 Q 115 4, 230 32 T 460 32 T 690 32 T 920 32"
+            fill="none" stroke="#c98a3b" stroke-width="1.2" opacity="0.55"/>
+      <circle cx="690" cy="32" r="3" fill="#e3a75a"/>
+    </svg>
+  </div>
+
+  <section class="feature">
+    <div class="feature-mark">01</div>
+    <div><h3>Cần câu &amp; kỹ năng</h3>
+    <p>Sưu tầm hàng chục loại cần, mở khóa kỹ năng chủ động để kiểm soát độ căng dây và hạ những con cá khó nhằn nhất.</p></div>
+  </section>
+  <section class="feature">
+    <div class="feature-mark">02</div>
+    <div><h3>Cá quý hiếm &amp; Boss</h3>
+    <p>Thời tiết trong game ảnh hưởng tỷ lệ gặp cá boss — theo dõi và canh đúng thời điểm để săn được chiến lợi phẩm giá trị.</p></div>
+  </section>
+  <section class="feature">
+    <div class="feature-mark">03</div>
+    <div><h3>Bảng xếp hạng &amp; tiến trình</h3>
+    <p>Tích lũy EXP, lên cấp, và so tài cùng cả server trên bảng xếp hạng câu cá được cập nhật liên tục.</p></div>
+  </section>
+</main>
+
+<footer>
+  <span>© 2026 Ông Cương. Đây không phải sản phẩm chính thức của Discord Inc.</span>
+  <span><a href="terms.html">Điều khoản Dịch vụ</a> · <a href="privacy.html">Chính sách Bảo mật</a></span>
+</footer>
+</body>
+</html>
