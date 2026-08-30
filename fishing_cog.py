@@ -97,13 +97,19 @@ WEATHER_CHANNEL_ID = 1543098261705855096
 class E:
     TOP1 = "🥇"
     TOP3 = "🏆"
-    GOLD = "<:xu:1543162904424218644>"
-    BAIT = "🪱"
+    GOLD = "<:coin:1543412753224441876>"
+    # Icon custom "túi mồi câu" — dùng ở mọi nơi hiển thị mồi câu (thay 🪱).
+    BAIT = "<:bag:1543415046716129300>"
     FISH_NUMBER = "🐟"
     # Emoji custom "Năng lượng" — thay cho biểu tượng pin 🔋 mặc định ở mọi
     # nơi hiển thị thanh thể lực/năng lượng cho người chơi.
-    ENERGY = "<:nangluong:1543219505533292664>"
+    ENERGY = "<:Energy:1543412946040791162>"
     JUNK = "🗑️"
+    # Icon custom mới — cân nặng / cần câu / máu / vận may.
+    WEIGHT = "<:Weight:1543413303118667886>"
+    ROD = "<:FishingRod:1543413835183030292>"
+    HEALTH = "<:health:1543414188263608411>"
+    LUCKY = "<:lucky:1543415633050345552>"
 
 
 # ---------------------------------------------------------------------------
@@ -305,11 +311,13 @@ def roll_fish(
 
 
 # ---------------------------------------------------------------------------
-# Tỉ lệ câu ra rác — 20% cơ bản, cộng thêm/bớt theo thời tiết hiện tại
-# (weather.junk_chance_delta, xem weather_data.py), luôn kẹp về [0, 0.9] để
-# không bao giờ chắc chắn 100% ra rác hoặc không thể ra rác.
+# Tỉ lệ câu ra rác — 8% cơ bản, cộng thêm/bớt theo thời tiết hiện tại
+# (weather.junk_chance_delta, xem weather_data.py), luôn kẹp về [0, 0.35] để
+# không bao giờ ra rác quá thường xuyên (trước là nền 20%/trần 90% — cảm
+# giác ra rác liên tục dù công thức chưa từng thực sự chạm gần 100%).
 # ---------------------------------------------------------------------------
-BASE_JUNK_CHANCE = 0.20
+BASE_JUNK_CHANCE = 0.08
+JUNK_CHANCE_CAP = 0.35
 
 # "Rác" hiện là 1 tab riêng cuối cùng trong /bán (Kho Cá) — tái dùng
 # FishTier chỉ để có label/key hiển thị nhất quán với các tier cá thật,
@@ -331,7 +339,7 @@ def roll_catch(
     lại roll cá bình thường qua `roll_fish`. Trả về 1 FishSpecies — dùng
     `fish_data.is_junk_fish(result.key)` ở nơi gọi để phân biệt."""
     junk_chance = BASE_JUNK_CHANCE + (weather.junk_chance_delta if weather else 0.0)
-    junk_chance = max(0.0, min(0.9, junk_chance))
+    junk_chance = max(0.0, min(JUNK_CHANCE_CAP, junk_chance))
     if random.random() < junk_chance:
         return roll_junk()
     boss_weight_mult = weather.boss_weight_mult if weather else 1.0
@@ -379,10 +387,39 @@ def format_time_left(seconds: float) -> str:
     return f"{m}p{s}s"
 
 
-def make_bar(ratio: float, size: int = 14, fill: str = "█", empty: str = "░") -> str:
+# ---------------------------------------------------------------------------
+# Icon custom cho thanh tiến trình (thay ký tự khối █/░ cũ) — 6 mảnh ghép
+# đầu trái/đầu phải (bo tròn) + đoạn giữa, mỗi loại có bản "đầy" (full) và
+# "rỗng" (empty). LƯU Ý: đây là custom emoji, KHÔNG được bọc trong dấu
+# backtick ` ` khi chèn vào nội dung tin nhắn — code span của Discord chỉ
+# hiện chữ thô (<:tên:id>) chứ không render ra icon.
+# ---------------------------------------------------------------------------
+BAR_LEFT_EMPTY = "<:5499lb2g:1543417500992278639>"
+BAR_LEFT_FULL = "<:5988lbg:1543417651466870784>"
+BAR_MID_EMPTY = "<:2827l2g:1543417787589071030>"
+BAR_MID_FULL = "<:3451lg:1543417550442995802>"
+BAR_RIGHT_EMPTY = "<:2881lb3g:1543417700729094204>"
+BAR_RIGHT_FULL = "<:3166lb4g:1543417744995782708>"
+
+
+def make_bar(ratio: float, size: int = 10) -> str:
+    """Vẽ thanh tiến trình bằng emoji custom (đầu trái/đầu phải bo tròn +
+    đoạn giữa, xem BAR_* ở trên) thay cho ký tự khối █/░ cũ. `size` = tổng
+    số ô (tính cả 2 ô đầu-cuối), tối thiểu 2. KHÔNG bọc kết quả hàm này
+    trong dấu backtick khi ghép vào tin nhắn (xem ghi chú ở BAR_* )."""
     ratio = max(0.0, min(1.0, ratio))
-    filled = round(ratio * size)
-    return fill * filled + empty * (size - filled)
+    size = max(2, size)
+    filled = max(0, min(size, round(ratio * size)))
+    tiles: list[str] = []
+    for i in range(size):
+        is_filled = i < filled
+        if i == 0:
+            tiles.append(BAR_LEFT_FULL if is_filled else BAR_LEFT_EMPTY)
+        elif i == size - 1:
+            tiles.append(BAR_RIGHT_FULL if is_filled else BAR_RIGHT_EMPTY)
+        else:
+            tiles.append(BAR_MID_FULL if is_filled else BAR_MID_EMPTY)
+    return "".join(tiles)
 
 
 # ---------------------------------------------------------------------------
@@ -402,8 +439,9 @@ def _add_continue_row(container: discord.ui.Container, on_continue: Optional[Con
     container.add_item(discord.ui.Separator())
     row = discord.ui.ActionRow()
     btn = discord.ui.Button(
-        label="🎣 Câu Tiếp", style=discord.ButtonStyle.success,
+        label="Câu Tiếp", style=discord.ButtonStyle.success,
         custom_id=f"reel_continue_{uuid.uuid4().hex}",
+        emoji=E.ROD,
     )
 
     async def _cb(interaction: discord.Interaction) -> None:
@@ -430,7 +468,7 @@ def build_fail_view(
 
     header = (
         f"{E.TOP1} **{member.display_name}** {rank_badge} `[{rank_label}]`\n"
-        f"🎣 **Cần:** {rod.emoji} `{rod.name}`"
+        f"{E.ROD} **Cần:** {rod.emoji} `{rod.name}`"
     )
     container.add_item(discord.ui.TextDisplay(header))
     container.add_item(discord.ui.Separator())
@@ -472,7 +510,7 @@ def build_success_view(
 
     header = (
         f"{E.TOP3} **{member.display_name}** {rank_badge} `[{rank_label}]`\n"
-        f"🎣 **Cần:** {rod.emoji} `{rod.name}`"
+        f"{E.ROD} **Cần:** {rod.emoji} `{rod.name}`"
     )
     if is_junk:
         header = f"{E.JUNK} **CÂU PHẢI RÁC RỒI...** {E.JUNK}\n" + header
@@ -533,11 +571,11 @@ def build_weather_view(weather: Weather, expires_at: Optional[float] = None) -> 
     effect_lines = [weather.description, ""]
     if weather.luck_delta:
         sign = "+" if weather.luck_delta > 0 else ""
-        effect_lines.append(f"🍀 Vận may câu cá: `{sign}{weather.luck_delta:.0%}`")
+        effect_lines.append(f"{E.LUCKY} Vận may câu cá: `{sign}{weather.luck_delta:.0%}`")
     if weather.tension_mult != 1.0:
         pct = (weather.tension_mult - 1.0)
         sign = "+" if pct > 0 else ""
-        effect_lines.append(f"🎣 Tốc độ căng dây câu: `{sign}{pct:.0%}`")
+        effect_lines.append(f"{E.ROD} Tốc độ căng dây câu: `{sign}{pct:.0%}`")
     if weather.boss_weight_mult != 1.0:
         effect_lines.append(f"👑 Tỷ lệ gặp cá quý hiếm/boss: `x{weather.boss_weight_mult:.1f}`")
     container.add_item(discord.ui.TextDisplay("\n".join(effect_lines)))
@@ -697,7 +735,7 @@ class ReelView(discord.ui.LayoutView):
         self.clear_items()
         container = discord.ui.Container(accent_colour=discord.Colour.blue())
         header = (
-            f"🎣 **{self.member.display_name}** đang câu...\n"
+            f"{E.ROD} **{self.member.display_name}** đang câu...\n"
             f"**Cần:** {self.rod.emoji} `{self.rod.name}` "
             f"(Độ dài dây câu: `{self.rod.line_len}`)"
         )
@@ -727,15 +765,16 @@ class ReelView(discord.ui.LayoutView):
             f"**{catch_label}** `{self.fish.name}`\n"
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
             f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
-            f"❤️ Máu cá: `{make_bar(hp_ratio)}` {hp_current:,}/{hp_max:,}\n"
-            f"Độ căng dây câu: `{make_bar(tension_ratio)}` {tension_ratio:.0%}{slow_note}\n"
-            f"{E.ENERGY} Năng lượng: `{make_bar(energy_ratio)}` {self.energy}/{self.max_energy}"
+            f"{E.HEALTH} Máu cá: {make_bar(hp_ratio)} `{hp_current:,}/{hp_max:,}`\n"
+            f"Độ căng dây câu: {make_bar(tension_ratio)} `{tension_ratio:.0%}`{slow_note}\n"
+            f"{E.ENERGY} Năng lượng: {make_bar(energy_ratio)} `{self.energy}/{self.max_energy}`"
         ))
         container.add_item(discord.ui.Separator())
 
         row = discord.ui.ActionRow()
         btn = discord.ui.Button(
-            label="🎣 Kéo!", style=discord.ButtonStyle.primary, custom_id=self._cid_pull,
+            label="Kéo!", style=discord.ButtonStyle.primary, custom_id=self._cid_pull,
+            emoji=E.ROD,
         )
         btn.callback = self._on_pull
         row.add_item(btn)
@@ -1059,8 +1098,21 @@ class RodShopView(discord.ui.LayoutView):
             f"{E.GOLD} Giá: `{fmt_gia_trieu(rod.price_vang)}` Vàng" if rod.price_vang is not None
             else "🔒 Không bán trực tiếp — xem cách nhận bên dưới"
         )
+        # LƯU Ý: trước đây hiển thị rod.dps ("Sát thương/giây") ở đây, nhưng
+        # số này KHÔNG được dùng trong công thức tính sát thương thật lúc
+        # câu (xem `dmg = self.rod.pull * uniform(1.3, 1.8) * ...` trong
+        # ReelView._on_pull) -> hiện số dps to hơn hẳn (vd 350) trong khi
+        # sát thương thực tế mỗi lần bấm "Kéo!" chỉ dựa theo Lực kéo (vd 50
+        # -> ra khoảng 50-150 tùy may mắn), khiến người chơi thấy lệch số
+        # liệu. Đổi sang hiển thị đúng khoảng sát thương THỰC TẾ mỗi lần
+        # kéo, tính trực tiếp từ rod.pull để luôn khớp với gameplay.
+        # Khớp đúng công thức trong ReelView._on_pull: dmg = pull * U(1.3,1.8)
+        # * (1 + luck_bonus*0.8) — luck_bonus tối đa thực tế = mồi Hoàng Kim
+        # (0.30) + thời tiết Cầu Vồng (0.50) = 0.80 -> hệ số nhân tối đa 1.64.
+        dmg_low = round(rod.pull * 1.3)
+        dmg_high = round(rod.pull * 1.8 * 1.64)
         stats = (
-            f"**Sát thương/giây:** `{rod.dps:,}`\n"
+            f"**Sát thương/lần kéo:** `{dmg_low:,} - {dmg_high:,}`\n"
             f"**Lực kéo:** `{rod.pull:,}`\n"
             f"**Độ dài dây câu:** `{rod.line_len}`\n"
             f"**Hiệu ứng đặc biệt:** {rod.effect}\n"
@@ -1552,7 +1604,7 @@ class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
             unlocked_rods.add(rod_key)
             data["unlocked_rods"] = list(unlocked_rods)
             rod = RODS[rod_key]
-            lines.append(f"🎣 Cần câu **{rod.emoji} {rod.name}**")
+            lines.append(f"{E.ROD} Cần câu **{rod.emoji} {rod.name}**")
 
         skill_key = reward.get("skill")
         if skill_key and skill_key in SKILLS:
@@ -1600,7 +1652,10 @@ class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
 # ---------------------------------------------------------------------------
 class UnifiedShopView(discord.ui.LayoutView):
     TABS = ("can_cau", "ky_nang", "moi_cau")
-    TAB_LABELS = {"can_cau": "🎣 Cần Câu", "ky_nang": "🧩 Kỹ Năng", "moi_cau": f"{E.BAIT} Mồi Câu"}
+    # Icon custom PHẢI truyền qua tham số `emoji=` riêng (không nhúng vào
+    # label text) — xem TAB_EMOJIS, giống UnifiedShopView/LeaderboardView.
+    TAB_LABELS = {"can_cau": "Cần Câu", "ky_nang": "🧩 Kỹ Năng", "moi_cau": "Mồi Câu"}
+    TAB_EMOJIS = {"can_cau": E.ROD, "moi_cau": E.BAIT}
 
     def __init__(self, user_id: int, data: dict, tab: str = "can_cau"):
         super().__init__(timeout=120)
@@ -1656,6 +1711,7 @@ class UnifiedShopView(discord.ui.LayoutView):
                 label=self.TAB_LABELS[t],
                 style=discord.ButtonStyle.primary if self.tab == t else discord.ButtonStyle.secondary,
                 custom_id=self._cid_tabs[t],
+                emoji=self.TAB_EMOJIS.get(t),
             )
             btn.callback = self._make_switch_tab_cb(t)
             tab_row.add_item(btn)
@@ -1989,7 +2045,7 @@ class LeaderboardView(discord.ui.LayoutView):
     # hiện nguyên văn `<:xu:...>` thay vì icon (bug đã gặp ở nút "Vàng" cũ).
     # Icon custom PHẢI truyền qua tham số `emoji=` riêng — xem TAB_EMOJIS.
     TAB_LABELS = {"can_nang": "Cân Nặng Cá", "vang": "Xu"}
-    TAB_EMOJIS = {"can_nang": "⚖️", "vang": E.GOLD}
+    TAB_EMOJIS = {"can_nang": E.WEIGHT, "vang": E.GOLD}
     TOP_N = 10
     _MEDALS = ("🥇", "🥈", "🥉")
 
@@ -2379,14 +2435,14 @@ class CauCaVanCan(commands.Cog):
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
             f"{E.GOLD} **Vàng:** `{fmt_vang(data['vang'])}`\n"
-            f"🎣 **Cần đang dùng:** {rod.emoji} `{rod.name}`"
+            f"{E.ROD} **Cần đang dùng:** {rod.emoji} `{rod.name}`"
         ))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
             f"📈 **Cấp:** `{level}` — EXP: `{exp}/{exp_needed}`\n"
-            f"`{make_bar(exp / exp_needed if exp_needed else 0)}`\n"
+            f"{make_bar(exp / exp_needed if exp_needed else 0)}\n"
             f"{E.ENERGY} **Năng lượng:** `{energy}/{max_energy}`\n"
-            f"`{make_bar(energy / max_energy if max_energy else 0)}`"
+            f"{make_bar(energy / max_energy if max_energy else 0)}"
         ))
         container.add_item(discord.ui.Separator())
         equipped = equipped_skill_objects(data)
@@ -2509,7 +2565,7 @@ class CauCaVanCan(commands.Cog):
             reward_lines.append(f"{E.GOLD} `{fmt_vang(reward['vang'])}` Vàng")
         if "rod" in reward:
             r = RODS[reward["rod"]]
-            reward_lines.append(f"🎣 {r.emoji} {r.name}")
+            reward_lines.append(f"{E.ROD} {r.emoji} {r.name}")
         if "skill" in reward:
             s = SKILLS[reward["skill"]]
             reward_lines.append(f"🧩 {s.emoji} {s.name}")
