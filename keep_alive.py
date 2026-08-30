@@ -20,14 +20,33 @@ Render tự cấp port qua biến môi trường PORT — không cần set tay.
 import os
 import threading
 
-from flask import Flask
+from flask import Flask, send_from_directory
 
 app = Flask(__name__)
 
+# Thư mục chứa index.html / terms.html / privacy.html (trang giới thiệu +
+# Điều khoản/Chính sách dùng để xác minh app trên Discord Developer Portal).
+_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site")
+
 
 @app.route("/")
+@app.route("/index.html")
 def home():
+    if os.path.isfile(os.path.join(_SITE_DIR, "index.html")):
+        return send_from_directory(_SITE_DIR, "index.html")
     return "Bot đang chạy!"
+
+
+@app.route("/terms")
+@app.route("/terms.html")
+def terms():
+    return send_from_directory(_SITE_DIR, "terms.html")
+
+
+@app.route("/privacy")
+@app.route("/privacy.html")
+def privacy():
+    return send_from_directory(_SITE_DIR, "privacy.html")
 
 
 def _run() -> None:
