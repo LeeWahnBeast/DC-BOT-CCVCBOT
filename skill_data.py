@@ -36,12 +36,17 @@ class Skill:
     key: str
     name: str
     emoji: str
-    effect: str            # "reduce_tension" | "slow_tension" | "instant_finish"
-    value: float             # reduce_tension: % trừ ngay; slow_tension: % giảm tốc độ tăng
-    energy_cost: int          # thể lực tiêu hao mỗi lần dùng (1 lần/ván câu)
+    # "reduce_tension" | "slow_tension" | "instant_finish" | "damage_fish_hp"
+    # | "slow_then_damage" (kết hợp: giảm tốc tăng dây trong duration_s giây,
+    #   HẾT hiệu lực thì gây thêm sát thương bonus_damage_pct lên máu cá)
+    effect: str
+    value: float             # reduce_tension/slow_tension: %; damage_fish_hp: % máu cá tối đa
+    energy_cost: int          # thể lực tiêu hao MỖI LẦN dùng
     price_vang: int            # giá mở khóa, quy về giá triệu (bội số 1.000.000)
-    duration_s: int = 0          # chỉ áp dụng cho slow_tension
+    duration_s: int = 0          # áp dụng cho slow_tension / slow_then_damage
     description: str = ""
+    uses_per_session: int = 1     # số lần dùng được tối đa trong 1 ván câu
+    bonus_damage_pct: float = 0.0   # chỉ dùng cho "slow_then_damage": % máu cá gây thêm khi hiệu lực slow kết thúc
 
 
 SKILL_SHOP: list[Skill] = [
@@ -103,6 +108,60 @@ SKILL_SHOP: list[Skill] = [
         "thien_dia_dong_tho", "Thiên Địa Đồng Thọ", "☯️", "slow_tension", 1.0, 90, 500_000_000,
         duration_s=20,
         description="Hợp nhất cùng trời đất, độ căng dây HOÀN TOÀN không tăng trong thời gian dài.",
+    ),
+    # -- Đề xuất người chơi (thêm 30/8) — dải giá/thể lực riêng, một số dùng
+    # được NHIỀU LẦN/ván (uses_per_session), 2 skill mới dùng effect
+    # "damage_fish_hp" (gây sát thương thẳng lên máu cá) và 1 skill dùng
+    # effect kết hợp "slow_then_damage" (Thái Cực Điệu).
+    Skill(
+        "vung_nhu_cho_gia", "Vững Như Chó Già", "🐕", "slow_tension", 0.30, 20, 2_000_000,
+        duration_s=5, uses_per_session=3,
+        description="Ghì chặt cần câu, khiến dây câu căng chậm lại hẳn trong ít giây.",
+    ),
+    Skill(
+        "ma_dat_dieu", "Mã Đạt Điệu", "🪢", "reduce_tension", 0.30, 30, 6_000_000,
+        description="Giật nhẹ dây câu đúng lúc, trừ ngay một phần độ căng dây hiện tại.",
+    ),
+    Skill(
+        "hoi_thu_thao", "Hồi Thủ Thao", "🤲", "slow_tension", 0.45, 40, 10_000_000,
+        duration_s=3,
+        description="Nới lỏng dây câu đúng nhịp, khiến độ căng dây tăng chậm đáng kể trong thời gian ngắn.",
+    ),
+    Skill(
+        "tu_long", "Tù Long", "🔗", "slow_tension", 0.60, 50, 25_000_000,
+        duration_s=8, uses_per_session=2,
+        description="Giữ nhịp thở thật đều, độ căng dây gần như ngừng tăng trong một lúc.",
+    ),
+    Skill(
+        "lao_nai_nai_toan_bi_oa", "Lão Nãi Nãi Toản Bi Oa", "👵", "reduce_tension", 0.60, 60, 40_000_000,
+        description="Làm dây câu cứng cáp tạm thời, trừ ngay phần lớn độ căng dây hiện tại.",
+    ),
+    Skill(
+        "luc_mach_than_dieu", "Lục Mạch Thần Điếu", "🖐️", "slow_tension", 0.90, 90, 75_000_000,
+        duration_s=10,
+        description="Tâm bất động trước sóng gió, độ căng dây HOÀN TOÀN không tăng trong ít giây.",
+    ),
+    Skill(
+        "da_ngu_bong_phap_cam_ki", "Đả Ngư Bổng Pháp Cấm Kị", "💥", "damage_fish_hp", 0.20, 200, 125_000_000,
+        description="Nắm chặt cần câu, phi lên trên không và trảm xuống mất một lượng máu khá mạnh.",
+    ),
+    Skill(
+        "hoi_anh_chi_thu", "Hồi Ảnh Chi Thủ", "🔄", "slow_tension", 0.85, 120, 200_000_000,
+        duration_s=4,
+        description="Cầm chặt cần câu, sử dụng kỹ thuật xoay dây câu làm giảm độ căng cực mạnh trong ít giây.",
+    ),
+    Skill(
+        "khai_thien_mon_v2", "Khai Thiên Môn", "⚡", "damage_fish_hp", 0.50, 300, 300_000_000,
+        description="Dồn hết nội lực, \"một cần mở cổng trời\", đập thẳng cá mất nhiều máu.",
+    ),
+    Skill(
+        "thai_cuc_dieu", "Thái Cực Điệu", "☯️", "slow_then_damage", 0.70, 400, 500_000_000,
+        duration_s=6, bonus_damage_pct=0.40,
+        description=(
+            "Vận chuyển âm dương, xoay chuyển thế công của cá thành sức mạnh của chính "
+            "mình. Vừa hóa giải áp lực từ dây câu, vừa tích tụ lực lượng cho một đòn "
+            "phản kích cực mạnh."
+        ),
     ),
 ]
 

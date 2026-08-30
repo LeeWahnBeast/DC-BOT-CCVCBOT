@@ -650,11 +650,15 @@ class ReelView(discord.ui.LayoutView):
         self.message: Optional[discord.Message] = None
         self._lock = asyncio.Lock()  # chặn _on_pull và _idle_tick edit chồng lên nhau
 
-        # -- Kỹ năng (skill) — tối đa SKILL_SLOTS ô, mỗi skill dùng 1 lần/ván ---
+        # -- Kỹ năng (skill) — tối đa SKILL_SLOTS ô. Mỗi skill dùng được tối
+        # đa `skill.uses_per_session` lần/ván (mặc định 1) — xem skill_uses.
         self.skills: list[Optional[Skill]] = list(skills or [])
-        self.skills_used: set[str] = set()
+        self.skill_uses: dict[str, int] = {}
         self.tension_slow_until: float = 0.0   # timestamp, còn hiệu lực "slow_tension" tới lúc này
         self.tension_slow_factor: float = 1.0    # hệ số nhân độ căng dây khi đang có "slow_tension"
+        # Hàng chờ sát thương trả chậm (cho effect "slow_then_damage"): mỗi
+        # phần tử là (thời điểm áp dụng, % máu cá tối đa gây thêm).
+        self.pending_damage: list[tuple[float, float]] = []
         self._cid_skills: dict[str, str] = {
             s.key: f"reel_skill_{s.key}_{uuid.uuid4().hex}" for s in self.skills if s
         }
@@ -701,6 +705,20 @@ class ReelView(discord.ui.LayoutView):
         self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult * self.tension_mult
         self.last_action_at = now
 
+    def _apply_pending_damage(self, now: float) -> None:
+        """Áp dụng sát thương trả chậm đã đến hạn (effect "slow_then_damage",
+        vd Thái Cực Điệu) — gọi cùng lúc với `_apply_idle_tension` ở mọi nơi
+        cần số liệu máu cá mới nhất."""
+        if not self.pending_damage:
+            return
+        still_pending = []
+        for trigger_at, pct in self.pending_damage:
+            if now >= trigger_at:
+                self.progress += self.target * pct
+            else:
+                still_pending.append((trigger_at, pct))
+        self.pending_damage = still_pending
+
     @tasks.loop(seconds=IDLE_TICK_SECONDS)
     async def _idle_tick(self) -> None:
         # message chỉ được gán SAU khi followup.send() xong (sau __init__),
@@ -713,6 +731,28 @@ class ReelView(discord.ui.LayoutView):
         async with self._lock:
             now = time.time()
             self._apply_idle_tension(now)
+            self._apply_pending_damage(now)
+
+            if self.progress >= self.target:
+                # Sát thương trả chậm (vd Thái Cực Điệu) vừa đủ để bắt được
+                # cá trong lúc đứng yên — kết thúc THÀNH CÔNG, edit thẳng
+                # self.message vì idle tick không có interaction sẵn.
+                self.finished = True
+                self._idle_tick.stop()
+                self.clear_items()
+                self.stop()
+                result = await self.on_finish(True, self.energy_spent)
+                view = build_success_view(
+                    self.member, self.rod, self.rank_label, self.rank_badge, self.fish,
+                    bait_name=self.bait_name, bait_luck=self.luck_bonus,
+                    bait_time_left=self.bait_time_left, is_boss=self.is_boss,
+                    is_junk=self.is_junk, level_info=result, on_continue=self.on_continue,
+                )
+                try:
+                    await self.message.edit(view=view, attachments=[])
+                except discord.HTTPException:
+                    pass
+                return
 
             if self.tension < self.tension_max:
                 return  # vẫn an toàn, KHÔNG edit UI — chỉ âm thầm cộng dồn
@@ -792,10 +832,12 @@ class ReelView(discord.ui.LayoutView):
         if active_skills:
             skill_row = discord.ui.ActionRow()
             for skill in active_skills:
-                used = skill.key in self.skills_used
+                uses_left = skill.uses_per_session - self.skill_uses.get(skill.key, 0)
+                used = uses_left <= 0
                 can_afford = self.energy >= skill.energy_cost
+                uses_suffix = f" x{uses_left}" if skill.uses_per_session > 1 else ""
                 skill_btn = discord.ui.Button(
-                    label=f"{skill.emoji} {skill.name} ({skill.energy_cost} NL)",
+                    label=f"{skill.emoji} {skill.name} ({skill.energy_cost} NL){uses_suffix}",
                     style=discord.ButtonStyle.secondary,
                     disabled=used or not can_afford,
                     custom_id=self._cid_skills[skill.key],
@@ -848,6 +890,7 @@ class ReelView(discord.ui.LayoutView):
             # tension của chính cú "Kéo!" này, để số hiển thị sau _render()
             # luôn khớp đúng thời điểm hiện tại, không bị "trễ nhịp".
             self._apply_idle_tension(now)
+            self._apply_pending_damage(now)
 
             # BUFF "op": sát thương/lần kéo cao hơn (1.3-1.8x thay vì 0.9-1.3x)
             # và luck ăn mạnh hơn (x0.8 thay vì x0.5).
@@ -899,9 +942,9 @@ class ReelView(discord.ui.LayoutView):
             return
         if not await self._guard(interaction):
             return
-        if skill.key in self.skills_used:
+        if self.skill_uses.get(skill.key, 0) >= skill.uses_per_session:
             await interaction.response.send_message(
-                f"⚠️ Bạn đã dùng **{skill.name}** trong ván câu này rồi!", ephemeral=True,
+                f"⚠️ Bạn đã dùng hết lượt **{skill.name}** trong ván câu này rồi!", ephemeral=True,
             )
             return
         if self.energy < skill.energy_cost:
@@ -922,15 +965,27 @@ class ReelView(discord.ui.LayoutView):
             # đúng thời điểm hiện tại (không phải số liệu cũ từ lần render
             # trước).
             self._apply_idle_tension(now)
+            self._apply_pending_damage(now)
             self.energy -= skill.energy_cost
             self.energy_spent += skill.energy_cost
-            self.skills_used.add(skill.key)
+            self.skill_uses[skill.key] = self.skill_uses.get(skill.key, 0) + 1
 
             if skill.effect == "reduce_tension":
                 self.tension = max(0.0, self.tension - self.tension_max * skill.value)
             elif skill.effect == "slow_tension":
                 self.tension_slow_until = now + skill.duration_s
                 self.tension_slow_factor = 1.0 - skill.value
+            elif skill.effect == "damage_fish_hp":
+                # Gây sát thương thẳng ngay lập tức, tính theo % máu tối đa
+                # của cá (self.target), không liên quan tới độ căng dây.
+                self.progress += self.target * skill.value
+            elif skill.effect == "slow_then_damage":
+                # "Thái Cực Điệu" — vừa làm chậm độ căng dây trong
+                # duration_s giây, vừa xếp lịch gây thêm sát thương ngay
+                # khi hiệu lực làm chậm kết thúc (xem _apply_pending_damage).
+                self.tension_slow_until = now + skill.duration_s
+                self.tension_slow_factor = 1.0 - skill.value
+                self.pending_damage.append((now + skill.duration_s, skill.bonus_damage_pct))
             elif skill.effect == "instant_finish":
                 # "Khai Thiên Môn Đập Cá" — bắt cá NGAY LẬP TỨC, bỏ qua
                 # tension hiện tại (dây không thể đứt sau đòn kết liễu này).
@@ -1315,13 +1370,23 @@ class SkillShopView(discord.ui.LayoutView):
             effect_line = f"Trừ ngay `{skill.value:.0%}` độ căng dây khi dùng."
         elif skill.effect == "slow_tension":
             effect_line = f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`."
+        elif skill.effect == "damage_fish_hp":
+            effect_line = f"Gây sát thương ngay bằng `{skill.value:.0%}` máu tối đa của cá."
+        elif skill.effect == "slow_then_damage":
+            effect_line = (
+                f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`. "
+                f"Sau khi hiệu lực kết thúc, gây thêm `{skill.bonus_damage_pct:.0%}` máu tối đa của cá."
+            )
         else:  # instant_finish
             effect_line = "BẮT CÁ NGAY LẬP TỨC, bỏ qua toàn bộ máu cá còn lại."
 
+        uses_note = (
+            f"{skill.uses_per_session} lần/ván câu" if skill.uses_per_session > 1 else "1 lần/ván câu"
+        )
         stats = (
             f"{skill.description}\n"
             f"**Hiệu ứng:** {effect_line}\n"
-            f"**Năng lượng tiêu hao:** `{skill.energy_cost}` mỗi lần dùng (1 lần/ván câu)\n"
+            f"**Năng lượng tiêu hao:** `{skill.energy_cost}` mỗi lần dùng (`{uses_note}`)\n"
             f"{E.GOLD} Giá: `{fmt_gia_trieu(skill.price_vang)}` Vàng"
         )
         container.add_item(discord.ui.TextDisplay(stats))
