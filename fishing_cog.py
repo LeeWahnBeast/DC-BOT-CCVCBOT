@@ -370,7 +370,9 @@ def roll_catch(
     lại roll cá bình thường qua `roll_fish`. Trả về 1 FishSpecies — dùng
     `fish_data.is_junk_fish(result.key)` ở nơi gọi để phân biệt."""
     junk_chance = BASE_JUNK_CHANCE + (weather.junk_chance_delta if weather else 0.0)
-    junk_chance = max(0.0, min(JUNK_CHANCE_CAP, junk_chance))
+    junk_cap = (weather.junk_chance_cap if weather and weather.junk_chance_cap is not None
+                else JUNK_CHANCE_CAP)
+    junk_chance = max(0.0, min(junk_cap, junk_chance))
     if random.random() < junk_chance:
         return roll_junk()
     boss_weight_mult = weather.boss_weight_mult if weather else 1.0
@@ -385,6 +387,12 @@ HP_BUFF_PRICE_10M = 10_000_000
 HP_BUFF_PRICE_5M = 5_000_000
 HP_BUFF_MULT_OVER_10M = 3.0
 HP_BUFF_MULT_OVER_5M = 2.0
+
+# Buff máu CHUNG cho TẤT CẢ cá (nhân thêm vào target sau hp_buff_multiplier),
+# theo yêu cầu tăng máu tất cả cá lên 10-20%. Đang để 1.15 (=+15%, giữa
+# khoảng yêu cầu) — chỉnh trực tiếp số này thành 1.10 hoặc 1.20 nếu muốn
+# đổi mức tăng.
+GLOBAL_HP_MULTIPLIER = 1.15
 
 
 def hp_buff_multiplier(price: int) -> float:
@@ -408,7 +416,7 @@ def compute_challenge(rod: Rod, fish: FishSpecies) -> tuple[float, float]:
     price_ratio = fish.price / max_price  # 0..1, càng lớn cá càng "dai"
 
     clicks_needed = random.uniform(4.0, 9.0) * (0.6 + 0.7 * price_ratio)
-    target = rod.pull * clicks_needed * hp_buff_multiplier(fish.price)
+    target = rod.pull * clicks_needed * hp_buff_multiplier(fish.price) * GLOBAL_HP_MULTIPLIER
     return target, clicks_needed
 
 
@@ -1049,6 +1057,21 @@ class ReelView(discord.ui.LayoutView):
                     self._last_skill_missed = skill.name
                 else:
                     self.progress = self.target
+            elif skill.effect == "damage_value":
+                # Khai Thiên Môn / Phá Phủ Trầm Chu / Bắc Minh Điếu Pháp /
+                # Càn Môn Khai / Tâm Thương — trước đây đều dùng
+                # "instant_finish" (kết liễu ngay 100% máu cá bất kể cá
+                # dai cỡ nào => quá bá đạo với cá boss máu buff cao).
+                # Giờ đổi thành gây sát thương THẲNG một GIÁ TRỊ cố định
+                # (quy theo lực kéo của cần đang dùng: rod.pull * value,
+                # value = số "lần kéo" quy đổi — KHÔNG còn theo % máu tối
+                # đa của cá), mỗi chiêu 1 giá trị `value` riêng để phân
+                # biệt sức mạnh giữa các chiêu. Vẫn giữ tỉ lệ TRƯỢT
+                # INSTANT_FINISH_MISS_CHANCE cho đúng cảm giác "đập cá".
+                if random.random() < INSTANT_FINISH_MISS_CHANCE:
+                    self._last_skill_missed = skill.name
+                else:
+                    self.progress += self.rod.pull * skill.value
 
             # Idle tick không còn tự kiểm tra mỗi giây -> phải tự check ở
             # đây: nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC
@@ -1448,6 +1471,12 @@ class SkillShopView(discord.ui.LayoutView):
             effect_line = (
                 f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`. "
                 f"Sau khi hiệu lực kết thúc, gây thêm `{skill.bonus_damage_pct:.0%}` máu tối đa của cá."
+            )
+        elif skill.effect == "damage_value":
+            effect_line = (
+                f"Gây sát thương ngay bằng `{skill.value:.1f}x` lực kéo của cần đang dùng "
+                f"(KHÔNG theo % máu cá) — có `{1 - INSTANT_FINISH_MISS_CHANCE:.0%}` cơ hội "
+                f"trúng đòn, nếu trượt thì coi như hụt (không mất cá)."
             )
         else:  # instant_finish — KHÔNG hiện % (né hết số liệu vì đã có tỉ
             # lệ trượt riêng, hiện % ở đây dễ gây hiểu lầm là % sát thương).

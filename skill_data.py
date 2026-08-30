@@ -58,13 +58,19 @@ class Skill:
     name: str
     emoji: str
     # "reduce_tension" | "slow_tension" | "instant_finish" | "damage_fish_hp"
+    # | "damage_value" (gây sát thương ngay bằng `value` LẦN lực kéo của
+    #   cần đang dùng — rod.pull * value — KHÔNG theo % máu tối đa của cá
+    #   như damage_fish_hp/instant_finish, để cá boss máu buff cao không
+    #   còn bị 1 chiêu kết liễu ngay. Có tỉ lệ TRƯỢT INSTANT_FINISH_MISS_CHANCE
+    #   giống instant_finish. Dùng cho bộ "Đập cá" cấp cao: Khai Thiên Môn,
+    #   Phá Phủ Trầm Chu, Càn Môn Khai, Bắc Minh Điếu Pháp, Tâm Thương)
     # | "slow_then_damage" (kết hợp: giảm tốc tăng dây trong duration_s giây,
     #   HẾT hiệu lực thì gây thêm sát thương bonus_damage_pct lên máu cá)
     # | "reduce_then_slow" (kết hợp "Giật + Kéo": trừ ngay `value`% độ căng
     #   dây VÀ đồng thời làm chậm tốc độ tăng dây `slow_value`% trong
     #   duration_s giây kế tiếp — không gây thêm sát thương cá)
     effect: str
-    value: float             # reduce_tension/slow_tension: %; damage_fish_hp: % máu cá tối đa; reduce_then_slow: % trừ ngay
+    value: float             # reduce_tension/slow_tension: %; damage_fish_hp: % máu cá tối đa; damage_value: số lần lực kéo (rod.pull); reduce_then_slow: % trừ ngay
     energy_cost: int          # thể lực tiêu hao MỖI LẦN dùng
     price_vang: int            # giá mở khóa, quy về giá triệu (bội số 1.000.000)
     duration_s: int = 0          # áp dụng cho slow_tension / slow_then_damage / reduce_then_slow
@@ -148,17 +154,17 @@ SKILL_SHOP: list[Skill] = [
         description="Kéo dây câu cực mạnh bằng thủ pháp xoay ảnh, trừ ngay phần lớn độ căng dây.",
     ),
     Skill(
-        "khai_thien_mon", "Khai Thiên Môn", "🌌", "instant_finish", 1.0, 100, 220_000_000,
+        "khai_thien_mon", "Khai Thiên Môn", "🌌", "damage_value", 4.0, 100, 220_000_000,
         description=(
             "Dồn hết nội lực, \"một cần mở toang cổng trời\", đập thẳng cá vào bờ — "
-            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+            "gây sát thương ngay bằng `4.0x` lực kéo của cần."
         ),
     ),
     Skill(
-        "pha_phu_tram_chu", "Phá Phủ Trầm Chu", "⚓", "instant_finish", 1.0, 110, 300_000_000,
+        "pha_phu_tram_chu", "Phá Phủ Trầm Chu", "⚓", "damage_value", 5.5, 110, 300_000_000,
         description=(
             "Đập vỡ thuyền chìm xuồng, dồn toàn lực kết liễu con mồi — "
-            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+            "gây sát thương ngay bằng `5.5x` lực kéo của cần."
         ),
     ),
 
@@ -182,10 +188,10 @@ SKILL_SHOP: list[Skill] = [
         description="Kéo dây câu mạnh theo tâm pháp Toàn Chân, trừ ngay phần lớn độ căng dây hiện tại.",
     ),
     Skill(
-        "bac_minh_dieu_phap", "Bắc Minh Điếu Pháp", "🐋", "instant_finish", 1.0, 120, 400_000_000,
+        "bac_minh_dieu_phap", "Bắc Minh Điếu Pháp", "🐋", "damage_value", 7.0, 120, 400_000_000,
         description=(
             "Hấp thụ nội lực biển Bắc Minh, dồn toàn lực đập cá — "
-            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+            "gây sát thương ngay bằng `7.0x` lực kéo của cần."
         ),
     ),
 
@@ -201,19 +207,19 @@ SKILL_SHOP: list[Skill] = [
         description="Vừa giật vừa kéo phá cửa ải Can Môn, trừ ngay một phần độ căng dây và làm chậm tốc độ tăng tiếp theo.",
     ),
     Skill(
-        "can_mon_khai", "Can Môn Khai", "💥", "instant_finish", 1.0, 115, 320_000_000,
+        "can_mon_khai", "Can Môn Khai", "💥", "damage_value", 6.0, 115, 320_000_000,
         description=(
             "Phá tan cửa ải Can Môn, dồn toàn lực đập cá — "
-            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+            "gây sát thương ngay bằng `6.0x` lực kéo của cần."
         ),
     ),
 
     # -- Thất Thương Điếu Pháp (bộ 4 chiêu: Tâm/Cản/Tưởng/Tử Thương) -------
     Skill(
-        "tam_thuong", "Tâm Thương", "💔", "instant_finish", 1.0, 130, 450_000_000,
+        "tam_thuong", "Tâm Thương", "💔", "damage_value", 8.0, 130, 450_000_000,
         description=(
             "Đòn đầu tiên của Thất Thương Quyền, tổn thương tận tâm can, dồn toàn lực "
-            "đập cá — có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+            "đập cá — gây sát thương ngay bằng `8.0x` lực kéo của cần."
         ),
     ),
     Skill(
