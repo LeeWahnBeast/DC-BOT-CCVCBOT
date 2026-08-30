@@ -2,15 +2,29 @@
 skill_data.py
 =============
 Kỹ năng câu cá — dùng trong ván kéo cá (xem ReelView trong fishing_cog.py).
-Lấy cảm hứng từ hệ thống skill của game gốc "Câu Cá Vạn Cân": skill tiêu
-hao thể lực (Stamina) và tác dụng chính là hỗ trợ dây câu KHÔNG bị đứt,
-không gây thêm sát thương trực tiếp lên máu cá.
+Bộ skill "GIÁNG NGƯ THẬP BÁT ĐIẾU" (17 chiêu chính) + các chiêu đặc biệt
+(Thái Cực Điếu Pháp, Càn Khôn Đại Na Ngư, Toàn Chân Điếu Pháp, Bắc Minh
+Điếu Pháp, bộ Thục Đạo Sơn Điếu Pháp: Can Môn Đương/Quan/Khai, bộ Thất
+Thương Điếu Pháp: Tâm/Cản/Tưởng/Tử Thương) — lấy theo đúng game gốc "Câu
+Cá Vạn Cân", KHÔNG còn skill tự chế như bộ cũ.
 
 TRANG BỊ
 --------
-Mỗi người chơi có SKILL_SLOTS = 3 ô trang bị (data["equipped_skills"]),
-mỗi ô chứa 1 skill_key hoặc None. Skill phải được mua/mở khóa
-(data["unlocked_skills"]) trước khi trang bị được vào ô.
+Mỗi người chơi mặc định có SKILL_SLOTS_BASE = 3 ô trang bị
+(data["equipped_skills"]), mỗi ô chứa 1 skill_key hoặc None. Skill phải
+được mua/mở khóa (data["unlocked_skills"]) trước khi trang bị được vào ô.
+
+MUA THÊM Ô (data["extra_skill_slots"])
+---------------------------------------
+Người chơi có thể MUA THÊM ô trang bị (ngoài 3 ô mặc định) bằng Vàng.
+Số ô đã mua thêm lưu ở data["extra_skill_slots"] (int, mặc định 0).
+Giá ô thứ (n+1) TĂNG DẦN 50 triệu mỗi ô đã mua:
+    ô thêm thứ 1: 50.000.000
+    ô thêm thứ 2: 100.000.000
+    ô thêm thứ 3: 150.000.000
+    ...
+Dùng slot_count(data) để lấy tổng số ô hiện có, next_slot_price(data) để
+lấy giá mua ô kế tiếp — xem 2 hàm bên dưới.
 
 DÙNG TRONG VÁN CÂU
 -------------------
@@ -27,8 +41,15 @@ tốn `energy_cost` thể lực ngay khi dùng, có 2 loại hiệu ứng:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
-SKILL_SLOTS = 3   # số ô trang bị skill mỗi người chơi
+SKILL_SLOTS = 3   # (GIỮ TÊN CŨ để tương thích ngược) số ô mặc định mỗi người chơi
+SKILL_SLOTS_BASE = SKILL_SLOTS
+
+# Giá mua ô trang bị THÊM (ngoài SKILL_SLOTS_BASE), tăng dần mỗi ô đã mua.
+EXTRA_SLOT_BASE_PRICE = 50_000_000
+# Không giới hạn cứng số ô có thể mua thêm — để None nếu không muốn chặn.
+MAX_EXTRA_SLOTS: int | None = None
 
 
 @dataclass(frozen=True)
@@ -39,139 +60,200 @@ class Skill:
     # "reduce_tension" | "slow_tension" | "instant_finish" | "damage_fish_hp"
     # | "slow_then_damage" (kết hợp: giảm tốc tăng dây trong duration_s giây,
     #   HẾT hiệu lực thì gây thêm sát thương bonus_damage_pct lên máu cá)
+    # | "reduce_then_slow" (kết hợp "Giật + Kéo": trừ ngay `value`% độ căng
+    #   dây VÀ đồng thời làm chậm tốc độ tăng dây `slow_value`% trong
+    #   duration_s giây kế tiếp — không gây thêm sát thương cá)
     effect: str
-    value: float             # reduce_tension/slow_tension: %; damage_fish_hp: % máu cá tối đa
+    value: float             # reduce_tension/slow_tension: %; damage_fish_hp: % máu cá tối đa; reduce_then_slow: % trừ ngay
     energy_cost: int          # thể lực tiêu hao MỖI LẦN dùng
     price_vang: int            # giá mở khóa, quy về giá triệu (bội số 1.000.000)
-    duration_s: int = 0          # áp dụng cho slow_tension / slow_then_damage
+    duration_s: int = 0          # áp dụng cho slow_tension / slow_then_damage / reduce_then_slow
     description: str = ""
     uses_per_session: int = 1     # số lần dùng được tối đa trong 1 ván câu
     bonus_damage_pct: float = 0.0   # chỉ dùng cho "slow_then_damage": % máu cá gây thêm khi hiệu lực slow kết thúc
+    slow_value: float = 0.0          # chỉ dùng cho "reduce_then_slow": % làm chậm tốc độ tăng dây
 
 
 SKILL_SHOP: list[Skill] = [
+    # =======================================================================
+    # GIÁNG NGƯ THẬP BÁT ĐIẾU — bộ 17 chiêu chính (theo game gốc), giá tăng
+    # dần 2 triệu -> 300 triệu theo đúng thứ tự & độ mạnh Vàng/thể lực đưa
+    # ra. Quy ước hiệu ứng:
+    #   "Giữ"          -> slow_tension (làm chậm tốc độ tăng căng dây)
+    #   "Giật"/"Kéo"   -> reduce_tension (trừ ngay % căng dây), mức % tăng
+    #                     dần theo thứ tự nhẹ/mạnh/cực mạnh/siêu mạnh
+    #   "Đập cá"       -> instant_finish (xem INSTANT_FINISH_MISS_CHANCE ở
+    #                     fishing_cog.py — có tỉ lệ TRƯỢT, không còn ăn
+    #                     chắc 100% như trước)
+    # =======================================================================
     Skill(
-        "giat_day", "Giật Dây", "🌀", "reduce_tension", 0.25, 15, 5_000_000,
-        description="Giật nhẹ dây câu đúng lúc, trừ ngay một phần độ căng dây hiện tại.",
+        "vung_nhu_cho_gia", "Vững Như Chó Già", "🐕", "slow_tension", 0.25, 15, 2_000_000,
+        duration_s=5,
+        description="Ghì chặt cần câu như chó già bám đất, giữ dây câu căng chậm lại trong ít giây.",
     ),
     Skill(
-        "giu_chan_ca", "Giữ Chân Cá", "⚓", "slow_tension", 0.5, 25, 15_000_000,
+        "ma_dat_dieu_phap", "Mã Đạt Điếu Pháp", "🪢", "reduce_tension", 0.20, 15, 6_000_000,
+        description="Giật nhẹ dây câu đúng lúc, trừ ngay một phần nhỏ độ căng dây hiện tại.",
+    ),
+    Skill(
+        "dai_ma_bai_thoai", "Đại Ma Bại Thoái", "🌀", "reduce_tension", 0.22, 18, 10_000_000,
+        description="Giật lùi dây câu, ép con mồi lùi bước, trừ ngay một phần độ căng dây.",
+    ),
+    Skill(
+        "soai_ca_ha_son", "Soái Ca Hạ Sơn", "🏔️", "reduce_tension", 0.40, 25, 16_000_000,
+        description="Giật mạnh dây câu như hạ sơn thị uy, trừ ngay khá nhiều độ căng dây hiện tại.",
+    ),
+    Skill(
+        "hoi_thu_thao", "Hồi Thủ Thao", "🤲", "reduce_tension", 0.30, 22, 22_000_000,
+        description="Kéo dây câu về đúng nhịp, trừ ngay một phần độ căng dây hiện tại.",
+    ),
+    Skill(
+        "lao_han_dap_xe", "Lão Hán Đạp Xe", "🚲", "reduce_tension", 0.32, 24, 28_000_000,
+        description="Kéo dây câu đều đặn như đạp xe của lão hán, trừ ngay một phần độ căng dây.",
+    ),
+    Skill(
+        "phi_thien_vo_cuc_dieu", "Phi Thiên Vô Cực Điếu", "🕊️", "reduce_tension", 0.35, 26, 35_000_000,
+        description="Kéo dây câu bay bổng vô cực, trừ ngay một phần kha khá độ căng dây.",
+    ),
+    Skill(
+        "lao_nai_nai_toan_bi_oa", "Lão Nãi Nãi Toàn Bị Oa", "👵", "reduce_tension", 0.50, 35, 45_000_000,
+        description="Kéo mạnh dây câu bằng công phu lão luyện, trừ ngay phần lớn độ căng dây.",
+    ),
+    Skill(
+        "te_thien_dai_dieu", "Tề Thiên Đại Điếu", "🐒", "reduce_tension", 0.52, 36, 55_000_000,
+        description="Kéo mạnh dây câu như Tề Thiên đại náo, trừ ngay phần lớn độ căng dây.",
+    ),
+    Skill(
+        "cong_ke_ha_dan", "Công Kê Hạ Đản", "🐓", "reduce_tension", 0.42, 28, 65_000_000,
+        description="Giật mạnh dây câu dứt khoát, trừ ngay khá nhiều độ căng dây hiện tại.",
+    ),
+    Skill(
+        "dieu_long_ban_ho", "Điếu Long Bàn Hổ", "🐉", "reduce_tension", 0.45, 30, 80_000_000,
+        description="Giật mạnh dây câu thế rồng cuộn hổ chầu, trừ ngay khá nhiều độ căng dây.",
+    ),
+    Skill(
+        "hoanh_tao_thien_quan", "Hoành Tảo Thiên Quân", "⚔️", "reduce_tension", 0.48, 32, 95_000_000,
+        description="Giật mạnh dây câu quét ngang vạn quân, trừ ngay khá nhiều độ căng dây.",
+    ),
+    Skill(
+        "xuyen_thien_hau_chi_dieu", "Xuyên Thiên Hầu Chi Điếu", "🐒", "reduce_tension", 0.65, 45, 115_000_000,
+        description="Kéo dây câu siêu mạnh xuyên thấu trời cao, trừ ngay rất nhiều độ căng dây.",
+    ),
+    Skill(
+        "da_ngu_bong_phap", "Đả Ngư Bổng Pháp", "💥", "reduce_tension", 0.55, 38, 135_000_000,
+        description="Giật mạnh dây câu bằng bổng pháp, trừ ngay phần lớn độ căng dây hiện tại.",
+    ),
+    Skill(
+        "hoi_anh_chi_thu", "Hồi Ảnh Chi Thủ", "🔄", "reduce_tension", 0.60, 42, 160_000_000,
+        description="Kéo dây câu cực mạnh bằng thủ pháp xoay ảnh, trừ ngay phần lớn độ căng dây.",
+    ),
+    Skill(
+        "khai_thien_mon", "Khai Thiên Môn", "🌌", "instant_finish", 1.0, 100, 220_000_000,
+        description=(
+            "Dồn hết nội lực, \"một cần mở toang cổng trời\", đập thẳng cá vào bờ — "
+            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+        ),
+    ),
+    Skill(
+        "pha_phu_tram_chu", "Phá Phủ Trầm Chu", "⚓", "instant_finish", 1.0, 110, 300_000_000,
+        description=(
+            "Đập vỡ thuyền chìm xuồng, dồn toàn lực kết liễu con mồi — "
+            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+        ),
+    ),
+
+    # =======================================================================
+    # CÁC CHIÊU ĐẶC BIỆT — mạnh hơn hẳn Thập Bát Điếu, giá 150tr -> 500tr.
+    # =======================================================================
+    Skill(
+        "thai_cuc_dieu_phap", "Thái Cực Điếu Pháp", "☯️", "slow_then_damage", 0.55, 300, 350_000_000,
+        duration_s=6, bonus_damage_pct=0.25,
+        description=(
+            "Vận chuyển âm dương: vừa kéo dây câu mạnh làm chậm hẳn tốc độ tăng căng "
+            "dây, vừa tích lực cho một đòn \"đập cá\" phản kích ngay khi hiệu lực kết thúc."
+        ),
+    ),
+    Skill(
+        "can_khon_dai_na_ngu", "Càn Khôn Đại Na Ngư", "🌪️", "reduce_tension", 0.70, 48, 250_000_000,
+        description="Kéo dây câu cực mạnh, xoay chuyển càn khôn dịch chuyển cả con mồi, trừ ngay rất nhiều độ căng dây.",
+    ),
+    Skill(
+        "toan_chan_dieu_phap", "Toàn Chân Điếu Pháp", "🧘", "reduce_tension", 0.58, 40, 180_000_000,
+        description="Kéo dây câu mạnh theo tâm pháp Toàn Chân, trừ ngay phần lớn độ căng dây hiện tại.",
+    ),
+    Skill(
+        "bac_minh_dieu_phap", "Bắc Minh Điếu Pháp", "🐋", "instant_finish", 1.0, 120, 400_000_000,
+        description=(
+            "Hấp thụ nội lực biển Bắc Minh, dồn toàn lực đập cá — "
+            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
+        ),
+    ),
+
+    # -- Thục Đạo Sơn Điếu Pháp (bộ 3 chiêu: Đương/Quan/Khai) --------------
+    Skill(
+        "can_mon_duong", "Can Môn Đương", "🚪", "slow_tension", 0.55, 30, 150_000_000,
         duration_s=8,
-        description="Ghì chặt cần câu, khiến dây câu căng chậm lại hẳn trong ít giây.",
+        description="Trấn giữ cửa ải Can Môn, giữ dây câu căng chậm lại hẳn trong ít giây.",
     ),
     Skill(
-        "tha_long_day", "Thả Lỏng Dây", "💨", "reduce_tension", 0.45, 30, 20_000_000,
-        description="Nới dây câu đúng nhịp, trừ ngay gần một nửa độ căng dây hiện tại.",
+        "can_mon_quan", "Can Môn Quan", "🗝️", "reduce_then_slow", 0.35, 40, 210_000_000,
+        duration_s=6, slow_value=0.40,
+        description="Vừa giật vừa kéo phá cửa ải Can Môn, trừ ngay một phần độ căng dây và làm chậm tốc độ tăng tiếp theo.",
     ),
     Skill(
-        "dinh_tam_cau", "Định Tâm", "🧘", "slow_tension", 0.7, 45, 50_000_000,
-        duration_s=12,
-        description="Giữ nhịp thở thật đều, độ căng dây gần như ngừng tăng trong một lúc.",
-    ),
-    Skill(
-        "pha_bang_day", "Phá Băng", "❄️", "reduce_tension", 0.6, 50, 80_000_000,
-        description="Làm dây câu cứng cáp tạm thời, trừ ngay phần lớn độ căng dây hiện tại.",
-    ),
-    Skill(
-        "an_nhien_cau", "An Nhiên", "🍃", "slow_tension", 1.0, 60, 150_000_000,
-        duration_s=10,
-        description="Tâm bất động trước sóng gió, độ căng dây HOÀN TOÀN không tăng trong ít giây.",
-    ),
-    # -- Skill tự thêm (KHÔNG lấy từ ảnh/game gốc — không tìm được nguồn để
-    # đối chiếu). Chèn theo giá tăng dần giữa các skill đã có, dùng đúng 2
-    # loại effect sẵn có để không cần sửa logic ReelView trong fishing_cog.py.
-    Skill(
-        "ngu_vuong_ap_che", "Ngư Vương Áp Chế", "🐋", "reduce_tension", 0.75, 55, 100_000_000,
-        description="Dồn sức áp đảo con mồi, trừ ngay phần lớn độ căng dây hiện tại.",
-    ),
-    Skill(
-        "tinh_lang_vinh_hang", "Tĩnh Lặng Vĩnh Hằng", "🌙", "slow_tension", 0.85, 80, 220_000_000,
-        duration_s=15,
-        description="Vạn vật lặng yên quanh cần câu, độ căng dây tăng cực chậm trong một khoảng dài.",
-    ),
-    # Tuyệt kỹ tối thượng — lấy cảm hứng từ trò đùa nổi tiếng trong giới câu
-    # cá "một cần mở toang cổng trời" (một cần câu được luôn cá cực lớn bất
-    # kể máu cá còn bao nhiêu). Giá/thể lực cao nhất trong shop, chỉ nên
-    # dùng khi chắc chắn muốn kết thúc ván ngay lập tức (ăn chắc cá, tránh
-    # rủi ro đứt dây giữa chừng với cá dai/boss).
-    Skill(
-        "khai_thien_mon", "Khai Thiên Môn Đập Cá", "🌌", "instant_finish", 1.0, 100, 300_000_000,
+        "can_mon_khai", "Can Môn Khai", "💥", "instant_finish", 1.0, 115, 320_000_000,
         description=(
-            "Tuyệt kỹ tối thượng — dồn hết nội lực, \"một cần mở toang cổng "
-            "trời\", đập thẳng cá vào bờ và BẮT NGAY LẬP TỨC bất kể máu cá "
-            "còn lại bao nhiêu."
+            "Phá tan cửa ải Can Môn, dồn toàn lực đập cá — "
+            "có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
         ),
     ),
-    # -- Skill tự thêm — lựa chọn thay thế cho ai không muốn dùng
-    # instant_finish, đắt/tốn thể lực hơn cả Khai Thiên Môn.
+
+    # -- Thất Thương Điếu Pháp (bộ 4 chiêu: Tâm/Cản/Tưởng/Tử Thương) -------
     Skill(
-        "thien_dia_dong_tho", "Thiên Địa Đồng Thọ", "☯️", "slow_tension", 1.0, 90, 500_000_000,
-        duration_s=20,
-        description="Hợp nhất cùng trời đất, độ căng dây HOÀN TOÀN không tăng trong thời gian dài.",
-    ),
-    # -- Đề xuất người chơi (thêm 30/8) — dải giá/thể lực riêng, một số dùng
-    # được NHIỀU LẦN/ván (uses_per_session), 2 skill mới dùng effect
-    # "damage_fish_hp" (gây sát thương thẳng lên máu cá) và 1 skill dùng
-    # effect kết hợp "slow_then_damage" (Thái Cực Điệu).
-    Skill(
-        "vung_nhu_cho_gia", "Vững Như Chó Già", "🐕", "slow_tension", 0.30, 20, 2_000_000,
-        duration_s=5, uses_per_session=3,
-        description="Ghì chặt cần câu, khiến dây câu căng chậm lại hẳn trong ít giây.",
-    ),
-    Skill(
-        "ma_dat_dieu", "Mã Đạt Điệu", "🪢", "reduce_tension", 0.30, 30, 6_000_000,
-        description="Giật nhẹ dây câu đúng lúc, trừ ngay một phần độ căng dây hiện tại.",
-    ),
-    Skill(
-        "hoi_thu_thao", "Hồi Thủ Thao", "🤲", "slow_tension", 0.45, 40, 10_000_000,
-        duration_s=3,
-        description="Nới lỏng dây câu đúng nhịp, khiến độ căng dây tăng chậm đáng kể trong thời gian ngắn.",
-    ),
-    Skill(
-        "tu_long", "Tù Long", "🔗", "slow_tension", 0.60, 50, 25_000_000,
-        duration_s=8, uses_per_session=2,
-        description="Giữ nhịp thở thật đều, độ căng dây gần như ngừng tăng trong một lúc.",
-    ),
-    Skill(
-        "lao_nai_nai_toan_bi_oa", "Lão Nãi Nãi Toản Bi Oa", "👵", "reduce_tension", 0.60, 60, 40_000_000,
-        description="Làm dây câu cứng cáp tạm thời, trừ ngay phần lớn độ căng dây hiện tại.",
-    ),
-    Skill(
-        "luc_mach_than_dieu", "Lục Mạch Thần Điếu", "🖐️", "slow_tension", 0.90, 90, 75_000_000,
-        duration_s=10,
-        description="Tâm bất động trước sóng gió, độ căng dây HOÀN TOÀN không tăng trong ít giây.",
-    ),
-    Skill(
-        "da_ngu_bong_phap_cam_ki", "Đả Ngư Bổng Pháp Cấm Kị", "💥", "damage_fish_hp", 0.20, 200, 125_000_000,
-        description="Nắm chặt cần câu, phi lên trên không và trảm xuống mất một lượng máu khá mạnh.",
-    ),
-    Skill(
-        "hoi_anh_chi_thu", "Hồi Ảnh Chi Thủ", "🔄", "slow_tension", 0.85, 120, 200_000_000,
-        duration_s=4,
-        description="Cầm chặt cần câu, sử dụng kỹ thuật xoay dây câu làm giảm độ căng cực mạnh trong ít giây.",
-    ),
-    Skill(
-        "khai_thien_mon_v2", "Khai Thiên Môn", "⚡", "damage_fish_hp", 0.50, 300, 300_000_000,
-        description="Dồn hết nội lực, \"một cần mở cổng trời\", đập thẳng cá mất nhiều máu.",
-    ),
-    Skill(
-        "thai_cuc_dieu", "Thái Cực Điệu", "☯️", "slow_then_damage", 0.70, 400, 500_000_000,
-        duration_s=6, bonus_damage_pct=0.40,
+        "tam_thuong", "Tâm Thương", "💔", "instant_finish", 1.0, 130, 450_000_000,
         description=(
-            "Vận chuyển âm dương, xoay chuyển thế công của cá thành sức mạnh của chính "
-            "mình. Vừa hóa giải áp lực từ dây câu, vừa tích tụ lực lượng cho một đòn "
-            "phản kích cực mạnh."
+            "Đòn đầu tiên của Thất Thương Quyền, tổn thương tận tâm can, dồn toàn lực "
+            "đập cá — có cơ hội BẮT NGAY LẬP TỨC bất kể máu cá còn lại bao nhiêu."
         ),
+    ),
+    Skill(
+        "can_thuong", "Cản Thương", "🛡️", "reduce_tension", 0.38, 26, 120_000_000,
+        description="Giật dây câu ngăn cản đà tiến của cá, trừ ngay một phần độ căng dây hiện tại.",
+    ),
+    Skill(
+        "tuong_thuong", "Tưởng Thương", "🧠", "reduce_tension", 0.44, 30, 145_000_000,
+        description="Kéo dây câu đánh vào tâm trí con mồi, trừ ngay khá nhiều độ căng dây hiện tại.",
+    ),
+    Skill(
+        "tu_thuong", "Tử Thương", "☠️", "reduce_tension", 0.68, 46, 500_000_000,
+        description="Giật mạnh dây câu đòn chí mạng cuối cùng của Thất Thương Quyền, trừ ngay gần hết độ căng dây.",
     ),
 ]
 
 SKILLS: dict[str, Skill] = {s.key: s for s in SKILL_SHOP}
 
 
+def slot_count(data: dict) -> int:
+    """Tổng số ô trang bị hiện có của người chơi = mặc định + số ô đã mua
+    thêm (data["extra_skill_slots"], mặc định 0 nếu chưa từng mua)."""
+    extra = int(data.get("extra_skill_slots", 0) or 0)
+    return SKILL_SLOTS_BASE + max(0, extra)
+
+
+def next_slot_price(data: dict) -> Optional[int]:
+    """Giá (Vàng) để mua ô trang bị KẾ TIẾP. Trả None nếu đã đạt
+    MAX_EXTRA_SLOTS (không mua thêm được nữa)."""
+    extra = int(data.get("extra_skill_slots", 0) or 0)
+    if MAX_EXTRA_SLOTS is not None and extra >= MAX_EXTRA_SLOTS:
+        return None
+    return EXTRA_SLOT_BASE_PRICE * (extra + 1)
+
+
 def equipped_skill_objects(data: dict) -> list[Skill | None]:
-    """Trả về list SKILL_SLOTS phần tử: Skill đã trang bị & còn mở khóa,
-    hoặc None cho ô trống / skill không còn hợp lệ (an toàn dữ liệu)."""
+    """Trả về list slot_count(data) phần tử: Skill đã trang bị & còn mở
+    khóa, hoặc None cho ô trống / skill không còn hợp lệ (an toàn dữ liệu)."""
+    n = slot_count(data)
     unlocked = set(data.get("unlocked_skills", []))
-    equipped = data.get("equipped_skills", [None] * SKILL_SLOTS)
-    equipped = (list(equipped) + [None] * SKILL_SLOTS)[:SKILL_SLOTS]
+    equipped = data.get("equipped_skills", [None] * n)
+    equipped = (list(equipped) + [None] * n)[:n]
     return [SKILLS.get(key) if key in unlocked else None for key in equipped]

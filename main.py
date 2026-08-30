@@ -95,7 +95,8 @@ async def on_ready():
 async def main() -> None:
     async with bot:
         await bot.load_extension("fishing_cog")
-        await bot.load_extension("update_log_cog")
+        await bot.load_extension("help_cog")
+        await bot.load_extension("auto_update_cog")
         await bot.load_extension("maintenance_cog")
         await bot.start(TOKEN)
 

@@ -37,10 +37,12 @@ CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
       tính tiến độ lẫn không tăng thêm tension.
 - Tên cá và MÁU CÁ (dạng thanh, giảm dần từ 100% -> 0% theo mỗi lần bấm
   "Kéo!") hiển thị ngay khi bắt đầu ván câu, không chỉ khi câu xong.
-- KỸ NĂNG (skill_data.py): mỗi người có SKILL_SLOTS (3) ô trang bị, mua/mở
-  khóa qua /shop_kỹ_năng. Mỗi skill trang bị chỉ dùng được 1 lần/ván câu,
-  tốn thể lực, hiệu ứng là trừ ngay % độ căng dây hoặc làm chậm tốc độ
-  tăng độ căng dây trong vài giây — không có skill gây thêm sát thương.
+- KỸ NĂNG (skill_data.py): mỗi người mặc định có 3 ô trang bị, mua/mở khóa
+  qua /shop_kỹ_năng. Có thể MUA THÊM ô trang bị bằng Vàng, giá tăng dần
+  50 triệu mỗi ô (skill_data.next_slot_price). Mỗi skill trang bị chỉ dùng
+  được 1 lần/ván câu, tốn thể lực, hiệu ứng là trừ ngay % độ căng dây hoặc
+  làm chậm tốc độ tăng độ căng dây trong vài giây — không có skill gây
+  thêm sát thương (trừ vài skill damage_fish_hp/slow_then_damage riêng).
 
 THỜI TIẾT (weather_data.py)
 ---------------------------
@@ -75,11 +77,15 @@ from firebase_db import (
 )
 from fish_data import (
     ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, FishTier, JUNK_ITEMS,
-    MAP_BY_KEY, MAPS, TIERS, FishSpecies, fish_in_map, is_junk_fish, roll_junk,
+    MAP6_KEY, MAP7_ITEM_KEY, MAP7_ITEM_LABEL, MAP_BY_KEY, MAPS, TIERS,
+    FishSpecies, fish_in_map, is_junk_fish, map_is_unlocked, roll_junk,
     tiers_unlocked_for_pull,
 )
 from rod_data import DEFAULT_ROD_KEY, LIMITED_ROD_LIST, RODS, ROD_LIST, Rod
-from skill_data import SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects
+from skill_data import (
+    SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects,
+    slot_count, next_slot_price,
+)
 from weather_data import WEATHER_BY_KEY, WEATHERS, Weather, roll_weather
 
 ASSET_DIR = Path(__file__).parent / "assets"
@@ -110,6 +116,7 @@ class E:
     ROD = "<:cancau:1543465309229285377>"
     HEALTH = "<:mau:1543460091993526313>"
     LUCKY = "<:lucky:1543464401066131506>"
+    CLOCK = "<a:clock:1543479349326512128>"
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +150,25 @@ def rank_for_score(score: int) -> tuple[str, str]:
         if score >= min_score:
             label, badge = lbl, bdg
     return label, badge
+
+
+# ---------------------------------------------------------------------------
+# Khí Tức — danh hiệu hiển thị theo CẤP ĐỘ (level, khác RANK_TIERS ở trên
+# vốn tính theo Điểm/score). Mốc cao hơn ghi đè mốc thấp hơn, chưa đạt mốc
+# nào thì không hiện Khí Tức.
+# ---------------------------------------------------------------------------
+AURA_TIERS = [
+    (20, "Khí Tức Tuyệt Vọng", "💀"),
+    (45, "Khí Tức Tiên Nhân", "🌌"),
+]
+
+
+def aura_for_level(level: int) -> Optional[tuple[str, str]]:
+    label, badge = None, None
+    for min_level, lbl, bdg in AURA_TIERS:
+        if level >= min_level:
+            label, badge = lbl, bdg
+    return (label, badge) if label else None
 
 
 def fmt_vang(n) -> str:
@@ -193,6 +219,11 @@ CLICK_COOLDOWN_SECONDS = 0.4      # chống spam nút "Kéo!" (buff: giảm từ
 REEL_TIMEOUT_SECONDS = 45.0        # không thao tác quá lâu -> hết hạn cứng, dừng ván
 IDLE_TENSION_PER_SECOND = 2.0      # % độ căng dây tăng thêm mỗi giây KHÔNG bấm "Kéo!" (buff: giảm từ 3.0)
 IDLE_TICK_SECONDS = 1.0            # tần suất kiểm tra/tăng tension khi đứng yên
+
+# Tỉ lệ TRƯỢT khi dùng skill "Đập cá" (effect instant_finish) — trước đây
+# ăn chắc 100% quá bá, giờ có 30% khả năng hụt đòn: mất thể lực/lượt dùng
+# như bình thường nhưng cá KHÔNG chết, ván câu vẫn tiếp tục bình thường.
+INSTANT_FINISH_MISS_CHANCE = 0.30
 
 # ---------------------------------------------------------------------------
 # Thể lực (thanh năng lượng) — TÁCH RIÊNG với "độ căng dây câu" ở trên.
@@ -538,7 +569,7 @@ def build_success_view(
         container.add_item(discord.ui.TextDisplay(
             f"**<:party:1543465613853327380> Chúc mừng bạn đã câu được:**\n"
             f"**Tên cá:** {fish.name}\n"
-            f"**Khối lượng:** `{fish.weight_label}`\n"
+            f"**Khối lượng:** {E.WEIGHT} `{fish.weight_label}`\n"
             f"**Đơn giá bán:** {E.GOLD} `{fmt_vang(fish.price)}` Vàng / con"
         ))
     if level_info:
@@ -550,6 +581,11 @@ def build_success_view(
             if level_info.get("leveled_up"):
                 exp_line += f"\n<:party:1543465613853327380> **LÊN CẤP {level_info['new_level']}!** Năng lượng đã được hồi đầy."
             exp_line += f"\n{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
+        if level_info.get("map_item_gained"):
+            exp_line += (
+                f"\n🗺️ **Nhận được vật phẩm:** `{level_info['map_item_gained']}` "
+                f"— mở khóa khu vực **Vực sâu Hà La**!"
+            )
         container.add_item(discord.ui.TextDisplay(exp_line))
     container.add_item(discord.ui.Separator())
     if is_junk:
@@ -588,7 +624,7 @@ def build_weather_view(weather: Weather, expires_at: Optional[float] = None) -> 
     if expires_at:
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
-            f"⏳ Còn hiệu lực: `{format_time_left(expires_at - time.time())}`"
+            f"{E.CLOCK} Còn hiệu lực: `{format_time_left(expires_at - time.time())}`"
         ))
     view.add_item(container)
     return view
@@ -659,6 +695,9 @@ class ReelView(discord.ui.LayoutView):
         # Hàng chờ sát thương trả chậm (cho effect "slow_then_damage"): mỗi
         # phần tử là (thời điểm áp dụng, % máu cá tối đa gây thêm).
         self.pending_damage: list[tuple[float, float]] = []
+        # Tên skill "Đập cá" (instant_finish) vừa TRƯỢT ở lượt bấm gần nhất
+        # (None nếu không trượt) — dùng để hiện dòng cảnh báo trong _render().
+        self._last_skill_missed: Optional[str] = None
         self._cid_skills: dict[str, str] = {
             s.key: f"reel_skill_{s.key}_{uuid.uuid4().hex}" for s in self.skills if s
         }
@@ -806,10 +845,15 @@ class ReelView(discord.ui.LayoutView):
         if now < self.tension_slow_until:
             slow_note = f" *(đang làm chậm, còn `{format_time_left(self.tension_slow_until - now)}`)*"
         catch_label = f"{E.JUNK} Rác:" if self.is_junk else "🐟 Cá:"
+        miss_note = (
+            f"\n💢 **{self._last_skill_missed} đã TRƯỢT!** Đòn đập cá hụt, không mất máu cá.\n"
+            if self._last_skill_missed else ""
+        )
         container.add_item(discord.ui.TextDisplay(
             f"**{catch_label}** `{self.fish.name}`\n"
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
-            f"nhưng đừng kéo quá tay kẻo đứt dây.\n\n"
+            f"nhưng đừng kéo quá tay kẻo đứt dây.\n"
+            f"{miss_note}\n"
             f"{E.HEALTH} Máu cá: `{hp_current:,}/{hp_max:,}`\n"
             f"{make_bar(hp_ratio)}\n"
             f"Độ căng dây câu: `{tension_ratio:.0%}`{slow_note}\n"
@@ -969,12 +1013,21 @@ class ReelView(discord.ui.LayoutView):
             self.energy -= skill.energy_cost
             self.energy_spent += skill.energy_cost
             self.skill_uses[skill.key] = self.skill_uses.get(skill.key, 0) + 1
+            self._last_skill_missed = None  # reset cảnh báo trượt của lượt trước
 
             if skill.effect == "reduce_tension":
                 self.tension = max(0.0, self.tension - self.tension_max * skill.value)
             elif skill.effect == "slow_tension":
                 self.tension_slow_until = now + skill.duration_s
                 self.tension_slow_factor = 1.0 - skill.value
+            elif skill.effect == "reduce_then_slow":
+                # "Can Môn Quan" (Giật + Kéo) — trừ NGAY một phần độ căng
+                # dây (như reduce_tension) VÀ đồng thời làm chậm tốc độ
+                # tăng căng dây trong duration_s giây kế tiếp (như
+                # slow_tension) — không gây thêm sát thương lên cá.
+                self.tension = max(0.0, self.tension - self.tension_max * skill.value)
+                self.tension_slow_until = now + skill.duration_s
+                self.tension_slow_factor = 1.0 - skill.slow_value
             elif skill.effect == "damage_fish_hp":
                 # Gây sát thương thẳng ngay lập tức, tính theo % máu tối đa
                 # của cá (self.target), không liên quan tới độ căng dây.
@@ -987,9 +1040,15 @@ class ReelView(discord.ui.LayoutView):
                 self.tension_slow_factor = 1.0 - skill.value
                 self.pending_damage.append((now + skill.duration_s, skill.bonus_damage_pct))
             elif skill.effect == "instant_finish":
-                # "Khai Thiên Môn Đập Cá" — bắt cá NGAY LẬP TỨC, bỏ qua
-                # tension hiện tại (dây không thể đứt sau đòn kết liễu này).
-                self.progress = self.target
+                # "Khai Thiên Môn Đập Cá" và các đòn "Đập cá" khác — bắt cá
+                # NGAY LẬP TỨC nếu thành công, nhưng KHÔNG còn ăn chắc 100%
+                # nữa: có INSTANT_FINISH_MISS_CHANCE (30%) tỉ lệ TRƯỢT, đòn
+                # coi như hụt — mất thể lực/lượt dùng như bình thường, cá
+                # KHÔNG chết, ván câu vẫn tiếp tục (KHÔNG đứt dây do trượt).
+                if random.random() < INSTANT_FINISH_MISS_CHANCE:
+                    self._last_skill_missed = skill.name
+                else:
+                    self.progress = self.target
 
             # Idle tick không còn tự kiểm tra mỗi giây -> phải tự check ở
             # đây: nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC
@@ -1339,7 +1398,10 @@ class SkillShopView(discord.ui.LayoutView):
         self._cid_prev = f"skillshop_prev_{uuid.uuid4().hex}"
         self._cid_next = f"skillshop_next_{uuid.uuid4().hex}"
         self._cid_buy = f"skillshop_buy_{uuid.uuid4().hex}"
-        self._cid_slots = [f"skillshop_slot{i}_{uuid.uuid4().hex}" for i in range(SKILL_SLOTS)]
+        self._cid_buy_slot = f"skillshop_buyslot_{uuid.uuid4().hex}"
+        # Số ô có thể tăng khi mua thêm giữa lúc dùng view -> tạo custom_id
+        # theo đúng số ô hiện tại của data (không fix cứng SKILL_SLOTS nữa).
+        self._cid_slots = [f"skillshop_slot{i}_{uuid.uuid4().hex}" for i in range(slot_count(data))]
         self._render(data)
 
     @classmethod
@@ -1359,8 +1421,13 @@ class SkillShopView(discord.ui.LayoutView):
         skill = SKILL_SHOP[self.index]
         unlocked = set(data.get("unlocked_skills", []))
         owned = skill.key in unlocked
-        equipped_keys = (list(data.get("equipped_skills", [None] * SKILL_SLOTS))
-                         + [None] * SKILL_SLOTS)[:SKILL_SLOTS]
+        n_slots = slot_count(data)
+        equipped_keys = (list(data.get("equipped_skills", [None] * n_slots))
+                         + [None] * n_slots)[:n_slots]
+        # custom_id các ô có thể chưa đủ nếu vừa mua thêm ô giữa lúc dùng
+        # view này (self._cid_slots được tạo lúc __init__ theo số ô lúc đó).
+        while len(self._cid_slots) < n_slots:
+            self._cid_slots.append(f"skillshop_slot{len(self._cid_slots)}_{uuid.uuid4().hex}")
 
         container.add_item(discord.ui.TextDisplay(
             f"## {skill.emoji} {skill.name}  ({self.index + 1}/{len(SKILL_SHOP)})"
@@ -1370,6 +1437,11 @@ class SkillShopView(discord.ui.LayoutView):
             effect_line = f"Trừ ngay `{skill.value:.0%}` độ căng dây khi dùng."
         elif skill.effect == "slow_tension":
             effect_line = f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`."
+        elif skill.effect == "reduce_then_slow":
+            effect_line = (
+                f"Trừ ngay `{skill.value:.0%}` độ căng dây, đồng thời giảm "
+                f"`{skill.slow_value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s` kế tiếp."
+            )
         elif skill.effect == "damage_fish_hp":
             effect_line = f"Gây sát thương ngay bằng `{skill.value:.0%}` máu tối đa của cá."
         elif skill.effect == "slow_then_damage":
@@ -1377,8 +1449,12 @@ class SkillShopView(discord.ui.LayoutView):
                 f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`. "
                 f"Sau khi hiệu lực kết thúc, gây thêm `{skill.bonus_damage_pct:.0%}` máu tối đa của cá."
             )
-        else:  # instant_finish
-            effect_line = "BẮT CÁ NGAY LẬP TỨC, bỏ qua toàn bộ máu cá còn lại."
+        else:  # instant_finish — KHÔNG hiện % (né hết số liệu vì đã có tỉ
+            # lệ trượt riêng, hiện % ở đây dễ gây hiểu lầm là % sát thương).
+            effect_line = (
+                f"Dồn toàn lực kết liễu con mồi — có `{1 - INSTANT_FINISH_MISS_CHANCE:.0%}` "
+                f"cơ hội BẮT CÁ NGAY LẬP TỨC, nếu trượt thì coi như hụt đòn (không mất cá)."
+            )
 
         uses_note = (
             f"{skill.uses_per_session} lần/ván câu" if skill.uses_per_session > 1 else "1 lần/ván câu"
@@ -1417,17 +1493,37 @@ class SkillShopView(discord.ui.LayoutView):
             )
             buy_btn.callback = self._buy
             action_row.add_item(buy_btn)
+            container.add_item(action_row)
         else:
-            for i in range(SKILL_SLOTS):
-                in_slot = equipped_keys[i] == skill.key
-                slot_btn = discord.ui.Button(
-                    label=f"{'✅ ' if in_slot else ''}Ô {i + 1}",
-                    style=discord.ButtonStyle.success if in_slot else discord.ButtonStyle.secondary,
-                    custom_id=self._cid_slots[i],
-                )
-                slot_btn.callback = self._make_slot_cb(i)
-                action_row.add_item(slot_btn)
-        container.add_item(action_row)
+            # Tối đa 5 nút/hàng (giới hạn Discord) -> chia thành nhiều hàng
+            # nếu người chơi đã mua thêm ô vượt quá 5.
+            for start in range(0, n_slots, 5):
+                row = discord.ui.ActionRow() if start > 0 else action_row
+                for i in range(start, min(start + 5, n_slots)):
+                    in_slot = equipped_keys[i] == skill.key
+                    slot_btn = discord.ui.Button(
+                        label=f"{'✅ ' if in_slot else ''}Ô {i + 1}",
+                        style=discord.ButtonStyle.success if in_slot else discord.ButtonStyle.secondary,
+                        custom_id=self._cid_slots[i],
+                    )
+                    slot_btn.callback = self._make_slot_cb(i)
+                    row.add_item(slot_btn)
+                container.add_item(row)
+
+        # Nút mua thêm ô trang bị — hiện luôn (không phụ thuộc skill đang
+        # xem), giá tăng dần theo skill_data.next_slot_price().
+        price = next_slot_price(data)
+        if price is not None:
+            slot_row = discord.ui.ActionRow()
+            buy_slot_btn = discord.ui.Button(
+                label=f"🧩 Mua Thêm Ô Trang Bị ({fmt_gia_trieu(price)})",
+                style=discord.ButtonStyle.blurple,
+                disabled=data["vang"] < price,
+                custom_id=self._cid_buy_slot,
+            )
+            buy_slot_btn.callback = self._buy_slot
+            slot_row.add_item(buy_slot_btn)
+            container.add_item(slot_row)
 
         if owned:
             equipped_line = " · ".join(
@@ -1435,7 +1531,8 @@ class SkillShopView(discord.ui.LayoutView):
                 for i, k in enumerate(equipped_keys)
             )
             container.add_item(discord.ui.TextDisplay(
-                f"_Bấm 1 ô để trang bị/gỡ kỹ năng này khỏi ô đó._\n**Đang trang bị:** {equipped_line}"
+                f"_Bấm 1 ô để trang bị/gỡ kỹ năng này khỏi ô đó._\n"
+                f"**Đang có {n_slots} ô · Đang trang bị:** {equipped_line}"
             ))
 
     # Xem giải thích _on_change ở RodShopView — cùng cơ chế cho phép
@@ -1501,8 +1598,9 @@ class SkillShopView(discord.ui.LayoutView):
             await interaction.response.defer()
             skill = SKILL_SHOP[self.index]
             data = await aget_user_data(self.user_id)
-            equipped = (list(data.get("equipped_skills", [None] * SKILL_SLOTS))
-                        + [None] * SKILL_SLOTS)[:SKILL_SLOTS]
+            n_slots = slot_count(data)
+            equipped = (list(data.get("equipped_skills", [None] * n_slots))
+                        + [None] * n_slots)[:n_slots]
             if equipped[slot_index] == skill.key:
                 equipped[slot_index] = None  # bấm lại ô đang chứa skill này -> gỡ ra
             else:
@@ -1513,6 +1611,29 @@ class SkillShopView(discord.ui.LayoutView):
             await asave_user_data(self.user_id, data)
             await self._refresh(interaction, data)
         return _cb
+
+    async def _buy_slot(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        data = await aget_user_data(self.user_id)
+        price = next_slot_price(data)
+        if price is None:
+            await interaction.followup.send("Bạn đã mua tối đa số ô trang bị rồi!", ephemeral=True)
+            return
+        if data["vang"] < price:
+            await interaction.followup.send(
+                f"Bạn không đủ Vàng! Cần `{fmt_gia_trieu(price)}` Vàng.", ephemeral=True
+            )
+            return
+        data["vang"] -= price
+        data["extra_skill_slots"] = int(data.get("extra_skill_slots", 0) or 0) + 1
+        # Mở rộng luôn mảng equipped_skills để khớp số ô mới (ô mới = None).
+        n_slots = slot_count(data)
+        equipped = (list(data.get("equipped_skills", [])) + [None] * n_slots)[:n_slots]
+        data["equipped_skills"] = equipped
+        await asave_user_data(self.user_id, data)
+        await self._refresh(interaction, data)
 
 
 # ---------------------------------------------------------------------------
@@ -1657,7 +1778,7 @@ class RedeemCodeModal(discord.ui.Modal, title="🎁 Nhập Code"):
             return
         if status == "expired":
             await interaction.followup.send(
-                f"⌛ Code `{code}` đã hết hạn sử dụng, không thể đổi được nữa!",
+                f"{E.CLOCK} Code `{code}` đã hết hạn sử dụng, không thể đổi được nữa!",
                 ephemeral=True,
             )
             return
@@ -2041,8 +2162,9 @@ class MapSelectView(discord.ui.LayoutView):
         self.clear_items()
         level = data.get("level", 1)
         current = data.get("current_map")
-        unlocked = [m for m in MAPS if level >= m.unlock_level]
-        locked = [m for m in MAPS if level < m.unlock_level]
+        owned_items = set(data.get("map_items", []) or [])
+        unlocked = [m for m in MAPS if map_is_unlocked(m.key, level, owned_items)]
+        locked = [m for m in MAPS if not map_is_unlocked(m.key, level, owned_items)]
 
         container = discord.ui.Container(accent_colour=discord.Colour.blurple())
         container.add_item(discord.ui.TextDisplay("## 🗺️ Chọn Khu Vực Câu"))
@@ -2054,10 +2176,13 @@ class MapSelectView(discord.ui.LayoutView):
             current_label = f"{m.emoji} {m.label}"
         lines = [f"**Đang chọn:** {current_label}"]
         if locked:
-            lock_lines = "\n".join(
-                f"🔒 {m.emoji} {m.label} — mở ở Lv.{m.unlock_level}" for m in locked
-            )
-            lines.append(f"\n**Chưa mở khóa:**\n{lock_lines}")
+            lock_bits = []
+            for m in locked:
+                reason = f"mở ở Lv.{m.unlock_level}"
+                if m.requires_item and m.requires_item not in owned_items:
+                    reason += " + cần vật phẩm bản đồ"
+                lock_bits.append(f"🔒 {m.emoji} {m.label} — {reason}")
+            lines.append("\n**Chưa mở khóa:**\n" + "\n".join(lock_bits))
         container.add_item(discord.ui.TextDisplay("\n".join(lines)))
         container.add_item(discord.ui.Separator())
 
@@ -2343,7 +2468,7 @@ class CauCaVanCan(commands.Cog):
         remaining = CAST_COOLDOWN_SECONDS - (now - data["last_cast"])
         if remaining > 0 and interaction.user.id not in OWNER_IDS:
             await interaction.followup.send(
-                f"⏳ Cần câu đang hồi chiêu, chờ thêm `{remaining:.1f}s` nữa nhé!",
+                f"{E.CLOCK} Cần câu đang hồi chiêu, chờ thêm `{remaining:.1f}s` nữa nhé!",
                 ephemeral=True,
             )
             return
@@ -2405,6 +2530,7 @@ class CauCaVanCan(commands.Cog):
                 "new_level": fresh.get("level", 1),
                 "energy": fresh["energy"],
                 "max_energy": max_energy_for_level(fresh.get("level", 1)),
+                "map_item_gained": None,
             }
 
             if success is True:
@@ -2419,6 +2545,15 @@ class CauCaVanCan(commands.Cog):
                     fresh["score"] = fresh.get("score", 0) + 10
                     if fish.weight_can:
                         fresh["total_weight_can"] = fresh.get("total_weight_can", 0.0) + fish.weight_can
+
+                    # Câu được 1 trong các cá boss của Map 6 (Hố Đen) ->
+                    # thưởng "Bản Đồ Vực Sâu Hà La", vật phẩm mở khóa Map 7.
+                    if is_boss and fish.map_key == MAP6_KEY:
+                        owned_items = set(fresh.get("map_items", []) or [])
+                        if MAP7_ITEM_KEY not in owned_items:
+                            owned_items.add(MAP7_ITEM_KEY)
+                            fresh["map_items"] = list(owned_items)
+                            result["map_item_gained"] = MAP7_ITEM_LABEL
 
                     exp_gain = exp_for_fish(fish)
                     fresh, leveled_up, _levels_gained = add_exp(fresh, exp_gain)
@@ -2504,6 +2639,7 @@ class CauCaVanCan(commands.Cog):
         container.add_item(discord.ui.TextDisplay(
             f"## 👛 Thông Tin của {interaction.user.display_name}\n"
             f"{rank_badge} `[{rank_label}]` — Điểm: `{data['score']}`"
+            + (f"\n{aura[1]} `[{aura[0]}]`" if (aura := aura_for_level(level)) else "")
         ))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(

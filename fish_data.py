@@ -1,19 +1,29 @@
 """
 fish_data.py
 ============
-Dữ liệu các loài cá, chia theo cấp bậc giá (tier) và khu vực câu (map).
-Tier lấy từ menu "Bán Cá" (Cấp Mười Cân -> Cấp Triệu Cân). Map là khu vực
-câu độc lập với tier giá, lấy từ các vòng khoanh tay trong ảnh (Map 1..4)
-+ danh sách 7 địa danh người dùng cung cấp (map 5-7 chưa có ảnh cá thật).
+Dữ liệu các loài cá, chia theo cấp bậc giá (tier, dùng cho menu "Bán Cá")
+và khu vực câu (map, dùng cho /chọn_map + roll cá lúc /câu_cá). 2 trục này
+ĐỘC LẬP với nhau: 1 map có thể chứa cá thuộc nhiều tier giá khác nhau.
 
 GHI CHÚ QUAN TRỌNG
 ------------------
-- 4 tier cuối (Ngàn Vạn Cân, Sơn Hải, Cá Giới Hạn, Cá Đặc Biệt) vẫn khóa
-  trong mọi ảnh đã gửi -> để trống, điền theo cùng format khi có ảnh rõ.
-- "SL" trong ảnh là số lượng cá người chơi đang có, không phải thuộc tính
-  loài cá nên không đưa vào đây.
-- map=None nghĩa là chưa xác định được khu vực câu (chưa có ảnh khoanh
-  vùng cho tier đó: Mười Cân, Mười Vạn Cân, Triệu Cân).
+- MAPS đã được LÀM LẠI HOÀN TOÀN theo đúng 9 khu vực + danh sách cá cụ thể
+  do người dùng cung cấp (thay cho bộ map cũ 13 khu vực nhiều map trống).
+- BOSS giờ được đánh dấu TƯỜNG MINH qua is_boss=True trên từng dòng cá
+  (khớp đúng con nào là boss của map nào theo yêu cầu), KHÔNG còn tự động
+  suy ra "cá đắt nhất trong tier" như bản cũ. Với các tier CHƯA đụng tới
+  trong đợt làm lại này (vd Cấp Triệu Cân) vẫn giữ fallback tự động chọn
+  cá đắt nhất trong tier làm boss, để không phá vỡ hành vi cũ ở phần chưa
+  có yêu cầu mới.
+- Map 7 (Vực Sâu Hà La) yêu cầu vật phẩm "Bản Đồ Vực Sâu Hà La"
+  (MAP7_ITEM_KEY) ngoài cấp độ — vật phẩm này được thưởng khi câu được 1
+  trong 3 cá boss của Map 6 (xem cấp code trong fishing_cog.py).
+- Map 8 (Hậu Viện Nam Cương) và Map 9 (Sông Băng Cực): CHƯA có ảnh gốc
+  xác nhận khối lượng/đơn giá — 4 con cá ở 2 map này (Đại Côn x2, Côn Hộ
+  Pháp Khổng Lồ, Côn Băng Hà) dùng số liệu ƯỚC LƯỢNG tạm thời, cần chỉnh
+  lại khi có ảnh/số liệu gốc.
+- "SL" trong ảnh gốc là số lượng cá người chơi đang có, không phải thuộc
+  tính loài cá nên không đưa vào đây.
 """
 
 from __future__ import annotations
@@ -77,6 +87,7 @@ class FishSpecies:
     tier_key: str
     map_key: str | None = None   # khu vực câu, độc lập với tier giá
     weight_can: float | None = None  # weight_label quy đổi ra số "cân" (xem parse_weight_to_can)
+    is_boss: bool = False  # boss của khu vực câu (map_key) — đánh dấu tường minh
 
 
 @dataclass(frozen=True)
@@ -85,6 +96,7 @@ class FishingMap:
     label: str
     emoji: str
     unlock_level: int = 0   # 0 = mở sẵn, >0 = cần đạt cấp độ này mới câu được
+    requires_item: str | None = None  # key vật phẩm cần có thêm để mở (ngoài unlock_level)
 
 
 @dataclass(frozen=True)
@@ -95,40 +107,42 @@ class FishTier:
 
 
 # ---------------------------------------------------------------------------
-# Khu vực câu cá — thứ tự map 1..4 khớp "Map 1..4" khoanh trong ảnh.
-# Map 5-7 chưa có ảnh cá thật (đang khóa/chưa mở trong game).
+# Vật phẩm mở khóa Map 7 — thưởng khi câu được 1 trong các cá boss của Map 6
+# (xem CATCH_ITEM_DROPS bên dưới + xử lý cộng vào data["map_items"] trong
+# fishing_cog.py).
 # ---------------------------------------------------------------------------
+MAP7_ITEM_KEY = "ban_do_vuc_sau_ha_la"
+MAP7_ITEM_LABEL = "Bản Đồ Vực Sâu Hà La"
+
 # ---------------------------------------------------------------------------
-# Khu vực câu cá — thứ tự map 1..4 khớp "Map 1..4" khoanh trong ảnh.
-# Map 5-7 chưa có ảnh cá thật (đang khóa/chưa mở trong game).
-# unlock_level: cấp độ NGƯỜI CHƠI (data["level"], không phải rank theo
-# điểm) cần đạt để chọn được khu vực này trong /chọn_map — xem
-# MapSelectView trong fishing_cog.py. "Hồ thủy điện" (đập thủy điện) mở
-# ngay từ Lv.1 theo yêu cầu; map 8-10 là map MỚI thêm, chưa có ảnh cá thật
-# (cùng tình trạng "map_key=None -> chưa gán cá" như map 5-7 cho tới khi
-# có dữ liệu cá thật), mở ở cấp cao hơn hẳn để phù hợp tiến trình dài hạn.
+# Khu vực câu cá — 9 map theo đúng yêu cầu (thay toàn bộ bộ map cũ).
+# unlock_level: cấp độ NGƯỜI CHƠI (data["level"]) cần đạt để chọn được khu
+# vực này trong /chọn_map — xem MapSelectView trong fishing_cog.py.
 # ---------------------------------------------------------------------------
+MAP1_KEY = "ho_bo_hoang"
+MAP2_KEY = "ho_thuy_dien"
+MAP3_KEY = "ho_cao_nguyen"
+MAP4_KEY = "dap_nuoc"
+MAP5_KEY = "khu_nuoc_thai_hat_nhan"
+MAP6_KEY = "ho_den"
+MAP7_KEY = "vuc_sau_ha_la"
+MAP8_KEY = "hau_vien_nam_cuong"
+MAP9_KEY = "song_bang_cuc"
+
 MAPS: list[FishingMap] = [
-    FishingMap("ho_chua_bo_hoang", "Hồ chứa nước bỏ hoang", "🏞️", unlock_level=1),
-    FishingMap("ho_thuy_dien_hat_nhan", "Hồ thủy điện gần nhà máy điện hạt nhân", "🌊", unlock_level=1),
-    FishingMap("ho_cao_nguyen", "Hồ cao nguyên trên 5.000 m", "🏔️", unlock_level=10),
-    FishingMap("dap_pat_di_hu", "Đập Pat Di Hu", "🏗️", unlock_level=15),
-    FishingMap("khu_nuoc_thai_hat_nhan", "Khu vực nước thải hạt nhân", "☢️", unlock_level=25),
-    FishingMap("black_pit", "Black Pit (Hố Đen)", "🕳️", unlock_level=45),
-    FishingMap("ji_bing_he", "Jí Bĩng Hé", "❄️", unlock_level=80),
-    # -- Map mới thêm — chưa có ảnh khoanh cá thật, điền _RAW_FISH map_key
-    # tương ứng khi có dữ liệu chính xác từ game gốc.
-    FishingMap("dam_lay_bi_an", "Đầm Lầy Bí Ẩn", "🌫️", unlock_level=55),
-    FishingMap("vuc_sau_bang_gia", "Vực Sâu Băng Giá", "🧊", unlock_level=100),
-    FishingMap("thien_mon_hai_vuc", "Thiên Môn Hải Vực", "🌌", unlock_level=150),
-    # -- Map tự thêm (KHÔNG lấy từ ảnh/game gốc — không tìm được nguồn để
-    # đối chiếu). Nối tiếp tiến trình sau map lv150, cùng tình trạng
-    # map_key=None (chưa gán cá thật) như nhóm map 8-10 phía trên.
-    FishingMap("nghia_dia_tau_dam", "Nghĩa Địa Tàu Đắm", "⚓", unlock_level=180),
-    FishingMap("mieng_nui_lua_ngam", "Miệng Núi Lửa Ngầm", "🌋", unlock_level=230),
-    FishingMap("vuc_sau_khong_day", "Vực Sâu Không Đáy", "🌀", unlock_level=300),
+    FishingMap(MAP1_KEY, "Hồ chứa nước bỏ hoang", "🏞️", unlock_level=1),
+    FishingMap(MAP2_KEY, "Hồ thủy điện gần nhà máy điện hạt nhân", "🌊", unlock_level=10),
+    FishingMap(MAP3_KEY, "Hồ cao nguyên trên 5.000 m", "🏔️", unlock_level=20),
+    FishingMap(MAP4_KEY, "Đập nước", "🏗️", unlock_level=30),
+    FishingMap(MAP5_KEY, "Khu vực nước thải hạt nhân", "☢️", unlock_level=45),
+    FishingMap(MAP6_KEY, "Hố đen", "🕳️", unlock_level=60),
+    # Cần Lv.60 + vật phẩm "Bản Đồ Vực Sâu Hà La" (rơi từ boss Map 6).
+    FishingMap(MAP7_KEY, "Vực sâu Hà La", "🌀", unlock_level=60, requires_item=MAP7_ITEM_KEY),
+    FishingMap(MAP8_KEY, "Hậu viện Nam Cương", "🏯", unlock_level=80),
+    FishingMap(MAP9_KEY, "Sông băng cực", "🧊", unlock_level=80),
 ]
 MAP_BY_KEY: dict[str, FishingMap] = {m.key: m for m in MAPS}
+
 
 # ---------------------------------------------------------------------------
 # Thứ tự các cấp — required_pull tăng dần theo lực kéo cần câu thực tế
@@ -141,9 +155,9 @@ TIERS: list[FishTier] = [
     FishTier("van_can", "Vạn Cân", 300),
     FishTier("muoi_van_can", "Mười Vạn Cân", 500),
     FishTier("trieu_can", "Cấp Triệu Cân", 700),
-    # Chưa có dữ liệu thật — điền cá vào _RAW_FISH khi có ảnh rõ.
     FishTier("ngan_van_can", "Ngàn Vạn Cân", 1200),
     FishTier("son_hai", "Sơn Hải", 2000),
+    # Chưa có dữ liệu thật — điền cá vào _RAW_FISH khi có ảnh rõ.
     FishTier("ca_gioi_han", "Cá Giới Hạn", 2500),
     FishTier("ca_dac_biet", "Cá Đặc Biệt", 3000),
 ]
@@ -151,86 +165,84 @@ TIER_BY_KEY: dict[str, FishTier] = {t.key: t for t in TIERS}
 
 
 class _F(NamedTuple):
-    """1 dòng cá thô: (tên, khối_lượng_hiển_thị, đơn_giá_vàng, map_key)."""
+    """1 dòng cá thô: (tên, khối_lượng_hiển_thị, đơn_giá_vàng, map_key, is_boss)."""
     name: str
     weight_label: str
     price: int
     map_key: str | None = None
+    is_boss: bool = False
 
 
-# Cấp Mười Cân — chưa có ảnh khoanh map.
+# Cấp Mười Cân — Map 1 (Hồ chứa nước bỏ hoang, Lv.1).
 _MUOI_CAN = [
-    _F("Cá Thanh Hoa", "5 cân", 15_000),
-    _F("Cá Vàng", "10 cân", 20_000),
-    _F("Cá Chép Nhỏ", "10 cân", 25_000),
-    _F("Cá Liên Trắng", "20 cân", 30_000),
-    _F("Cá Trê", "30 cân", 40_000),
-    _F("Cá Diếc", "40 cân", 50_000),
-    _F("Cá Nheo Biến Dị", "80 cân", 100_000),
+    _F("Cá Thanh Hoa", "5 cân", 15_000, MAP1_KEY),
+    _F("Cá Vàng", "10 cân", 20_000, MAP1_KEY),
+    _F("Cá Chép Nhỏ", "10 cân", 25_000, MAP1_KEY),
+    _F("Cá Liên Trắng", "20 cân", 30_000, MAP1_KEY),
+    _F("Cá Trê", "30 cân", 40_000, MAP1_KEY),
+    _F("Cá Diếc", "40 cân", 50_000, MAP1_KEY),
+    # Đổi tên từ "Cá Nheo Biến Dị" theo yêu cầu — boss Map 1.
+    _F("Cá Chép Râu Đỏ", "80 cân", 100_000, MAP1_KEY, is_boss=True),
 ]
 
-# Cấp Trăm Cân — toàn bộ = Map 1 (Hồ chứa nước bỏ hoang).
-_M1 = "ho_chua_bo_hoang"
+# Cấp Trăm Cân — Map 2 (Hồ thủy điện gần nhà máy điện hạt nhân, Lv.10).
 _TRAM_CAN = [
-    _F("Cá Chép Đỏ Đột Biến", "100 cân", 150_000, _M1),
-    _F("Cá Chép Xanh Biến Dị", "100 cân", 150_000, _M1),
-    _F("Cá Liên Dung Biến Dị", "180 cân", 200_000, _M1),
-    _F("La Phi Khổng Lồ", "300 cân", 500_000, _M1),
-    _F("Tổ Ngư Hoàng Kim", "400 cân", 800_000, _M1),
-    _F("Vương Cá Chép", "500 cân", 1_000_000, _M1),
-    _F("Đối Thiên Kiều", "500 cân", 1_000_000, _M1),
+    _F("Cá Chép Đỏ Đột Biến", "100 cân", 150_000, MAP2_KEY),
+    _F("Cá Chép Xanh Biến Dị", "100 cân", 150_000, MAP2_KEY),
+    _F("Cá Liên Dung Biến Dị", "180 cân", 200_000, MAP2_KEY),
+    _F("La Phi Khổng Lồ", "300 cân", 500_000, MAP2_KEY),
+    _F("Tổ Ngư Hoàng Kim", "400 cân", 800_000, MAP2_KEY),
+    _F("Vương Cá Chép", "500 cân", 1_000_000, MAP2_KEY, is_boss=True),
+    _F("Đối Thiên Kiều", "500 cân", 1_000_000, MAP2_KEY, is_boss=True),
 ]
 
-# Cấp Ngàn Cân — 8 con đầu = Map 2 (Hồ thủy điện), phần còn lại = Map 3 (Hồ cao nguyên).
-_M2 = "ho_thuy_dien_hat_nhan"
-_M3 = "ho_cao_nguyen"
+# Cấp Ngàn Cân — dàn trải Map 3/4/5/6 (xem map_key từng dòng).
 _NGAN_CAN = [
-    _F("Bạch Điêu Ngàn Cân", "1.000 cân", 1_200_000, _M2),
-    _F("Cá Thanh Râu Vàng", "1.200 cân", 1_500_000, _M2),
-    _F("Cá Cờ Vây Đen", "1.400 cân", 2_000_000, _M2),
-    _F("Cá Cờ Vây Đỏ", "1.600 cân", 2_500_000, _M2),
-    _F("Cá Trắng Vây Vàng", "1.800 cân", 2_800_000, _M2),
-    _F("Cá Cờ Vây Xanh", "2.500 cân", 3_000_000, _M2),
-    _F("La Phi Đầu Rồng (Nhỏ)", "2.500 cân", 2_000_000, _M2),
-    _F("Vua Cá Cờ", "5.000 cân", 4_500_000, _M2),
-    _F("La Phi Đầu Rồng (Lớn)", "6.000 cân", 5_000_000, _M3),
-    _F("Quy Ngư Đột Biến", "5.000 cân", 4_000_000, _M3),
-    _F("Thạch Bản Đột Biến", "5.000 cân", 4_200_000, _M3),
-    _F("Bá Ngư Đột Biến", "5.000 cân", 4_500_000, _M3),
-    _F("Giao Ngư Đột Biến", "6.000 cân", 4_800_000, _M3),
-    _F("Xước Ngư Đột Biến", "7.000 cân", 5_000_000, _M3),
-    _F("Điêu Ngư Đột Biến", "7.000 cân", 5_200_000, _M3),
-    _F("Xích Nhãn", "8.000 cân", 6_500_000, _M3),
-    _F("Cá Cờ Côn Luân", "3.000 cân", 8_000_000, _M3),
-    _F("Thổ Lăng Ngư", "4.000 cân", 8_000_000, _M3),
-    _F("Cá Biển Dị", "5.000 cân", 8_500_000, _M3),
-    _F("Cá Mỏ Nhọn Biển Dị", "5.000 cân", 8_500_000, _M3),
+    _F("Bạch Điêu Ngàn Cân", "1.000 cân", 1_200_000, MAP3_KEY),
+    _F("Cá Thanh Râu Vàng", "1.200 cân", 1_500_000, MAP3_KEY),
+    _F("Cá Cờ Vây Đen", "1.400 cân", 2_000_000, MAP3_KEY),
+    _F("Cá Cờ Vây Đỏ", "1.600 cân", 2_500_000, MAP3_KEY),
+    _F("Cá Trắng Vây Vàng", "1.800 cân", 2_800_000, MAP3_KEY),
+    _F("Cá Cờ Vây Xanh", "2.500 cân", 3_000_000, MAP3_KEY),
+    _F("La Phi Đầu Rồng (Nhỏ)", "2.500 cân", 2_000_000, MAP3_KEY),
+    _F("Vua Cá Cờ", "5.000 cân", 4_500_000, MAP3_KEY, is_boss=True),
+    _F("La Phi Đầu Rồng (Lớn)", "6.000 cân", 5_000_000, MAP3_KEY, is_boss=True),
+    _F("Quy Ngư Đột Biến", "5.000 cân", 4_000_000, MAP5_KEY),
+    _F("Thạch Bản Đột Biến", "5.000 cân", 4_200_000, MAP4_KEY),
+    _F("Bá Ngư Đột Biến", "5.000 cân", 4_500_000, MAP4_KEY),
+    _F("Giao Ngư Đột Biến", "6.000 cân", 4_800_000, MAP5_KEY),
+    _F("Xước Ngư Đột Biến", "7.000 cân", 5_000_000, MAP5_KEY),
+    _F("Điêu Ngư Đột Biến", "7.000 cân", 5_200_000, MAP5_KEY),
+    _F("Xích Nhãn", "8.000 cân", 6_500_000, MAP5_KEY),
+    _F("Cá Cờ Côn Luân", "3.000 cân", 8_000_000, MAP6_KEY),
+    _F("Thổ Lăng Ngư", "4.000 cân", 8_000_000, MAP6_KEY),
+    _F("Cá Biển Dị", "5.000 cân", 8_500_000, MAP6_KEY),
+    _F("Cá Mỏ Nhọn Biển Dị", "5.000 cân", 8_500_000, MAP6_KEY),
 ]
 
-# Vạn Cân — 2 con rẻ nhất = Map 2, phần còn lại = Map 4 (Đập Pat Di Hu).
-_M4 = "dap_pat_di_hu"
+# Vạn Cân — dàn trải Map 3/4/5/6, phần không thuộc map nào ở lại map_key=None.
 _VAN_CAN = [
-    _F("Giao Ngư Long", "10.000 cân", 8_000_000, _M2),
-    _F("Cá Mập Biến Dị", "1 vạn cân", 9_500_000, _M2),
-    _F("Cá Biển Đột Biến", "1 vạn cân", 8_500_000, _M4),
-    _F("Tam Đương Gia Bá Địa Hổ", "10.000 cân", 7_800_000, _M4),
-    _F("Nhị Đương Gia Bá Địa Hổ", "10.000 cân", 8_000_000, _M4),
-    _F("Đại Đương Gia Bá Địa Hổ", "10.000 cân", 8_200_000, _M4),
-    _F("Cá Chép Nuốt Trời", "2 vạn cân", 12_000_000, _M4),
-    _F("Liên Ưng Lôi Điện", "30.000 cân", 15_000_000, _M4),
-    _F("Thanh Ngư Sừng Bạc", "50.000 cân", 17_500_000, _M4),
-    _F("Cá Đầu Chó", "50.000 cân", 18_000_000, _M4),
-    _F("Cá Cờ Đầu Bò", "20.000 cân", 17_000_000, _M4),
-    _F("Song Thổ Lăng Ngư", "30.000 cân", 18_000_000, _M4),
-    _F("Âm·Trúc Thanh Bạch Điêu", "5 vạn cân", 17_000_000, _M4),
+    _F("Giao Ngư Long", "10.000 cân", 8_000_000, MAP3_KEY, is_boss=True),
+    _F("Cá Mập Biến Dị", "1 vạn cân", 9_500_000, MAP5_KEY, is_boss=True),
+    _F("Cá Biển Đột Biến", "1 vạn cân", 8_500_000),  # chưa gán map theo yêu cầu mới
+    _F("Tam Đương Gia Bá Địa Hổ", "10.000 cân", 7_800_000, MAP4_KEY, is_boss=True),
+    _F("Nhị Đương Gia Bá Địa Hổ", "10.000 cân", 8_000_000, MAP4_KEY),
+    _F("Đại Đương Gia Bá Địa Hổ", "10.000 cân", 8_200_000, MAP4_KEY, is_boss=True),
+    _F("Cá Chép Nuốt Trời", "2 vạn cân", 12_000_000, MAP4_KEY, is_boss=True),
+    _F("Liên Ưng Lôi Điện", "30.000 cân", 15_000_000, MAP6_KEY),
+    _F("Thanh Ngư Sừng Bạc", "50.000 cân", 17_500_000, MAP6_KEY),
+    _F("Cá Đầu Chó", "50.000 cân", 18_000_000, MAP6_KEY, is_boss=True),
+    _F("Cá Cờ Đầu Bò", "20.000 cân", 17_000_000, MAP6_KEY, is_boss=True),
+    _F("Song Thổ Lăng Ngư", "30.000 cân", 18_000_000, MAP6_KEY, is_boss=True),
+    _F("Âm·Trúc Thanh Bạch Điêu", "5 vạn cân", 17_000_000),  # chưa gán map theo yêu cầu mới
 ]
 
-# Mười Vạn Cân — chưa có ảnh khoanh map.
+# Mười Vạn Cân — 2 con được gán làm boss Map 4/5, phần còn lại chưa gán map.
 _MUOI_VAN_CAN = [
     _F("Cá Piranha", "100.000 cân", 40_000_000),
     _F("Ngư Châu", "—", 200_000_000),
-    _F("Vua Cá Mập Biển", "10 vạn cân", 30_000_000),
-    _F("Cá Koi Hình Rồng", "100.000 cân", 30_000_000),
+    _F("Vua Cá Mập Biển", "10 vạn cân", 30_000_000, MAP5_KEY, is_boss=True),
+    _F("Cá Koi Hình Rồng", "100.000 cân", 30_000_000, MAP4_KEY, is_boss=True),
     _F("Âm·Cá Mào Gà", "10 vạn cân", 30_000_000),
     _F("Âm·Lý Ngư Sừng Đỏ", "15 vạn cân", 35_000_000),
     _F("Âm·Cá Lưng Gai", "20 vạn cân", 40_000_000),
@@ -255,7 +267,8 @@ _MUOI_VAN_CAN = [
     _F("Đuôi Đỏ", "800.000 cân", 70_000_000),
 ]
 
-# Cấp Triệu Cân — chưa có ảnh khoanh map.
+# Cấp Triệu Cân — chưa có ảnh khoanh map, KHÔNG đụng tới trong đợt làm lại
+# map này -> vẫn dùng fallback boss tự động (cá đắt nhất trong tier).
 _TRIEU_CAN = [
     _F("Vua Cá Mập Xanh", "1 triệu cân", 85_000_000),
     _F("Cá Mú Vây Dao", "1 triệu cân", 85_000_000),
@@ -291,6 +304,34 @@ _TRIEU_CAN = [
     _F("Rùa Cá Sấu Trăm", "—", 200_000_000),
 ]
 
+# Sơn Hải — Map 7 (Vực sâu Hà La, Lv.60 + vật phẩm bản đồ). Khớp đúng menu
+# "Sơn Hải" trong ảnh gốc (12 con: 10 Hà La Ngư Phân + 2 boss).
+_SON_HAI = [
+    _F("Hà La Ngư Phân 1", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 2", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 3", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 4", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 5", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 6", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 7", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 8", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 9", "200.000 cân", 45_000_000, MAP7_KEY),
+    _F("Hà La Ngư Phân 10", "200.000 cân", 45_000_000, MAP7_KEY),
+    # 2 boss cuối cùng — theo yêu cầu, cần "đánh bại từ Phân 1 đến Phân 10"
+    # trước (thứ tự roll/điều kiện mở khóa cụ thể xử lý ở fishing_cog.py).
+    _F("Bản Thể Hà La Ngư", "1 triệu cân", 75_000_000, MAP7_KEY, is_boss=True),
+    _F("Hà La Ngư Thoát", "1 triệu cân", 85_000_000, MAP7_KEY, is_boss=True),
+]
+
+# Ngàn Vạn Cân — Map 8 (Hậu viện Nam Cương) + Map 9 (Sông băng cực).
+# ƯỚC LƯỢNG TẠM — chưa có ảnh gốc xác nhận số liệu, xem ghi chú đầu file.
+_NGAN_VAN_CAN = [
+    _F("Đại Côn", "200.000 cân", 320_000_000, MAP8_KEY),
+    _F("Đại Côn (Boss)", "600.000 cân", 450_000_000, MAP8_KEY, is_boss=True),
+    _F("Côn Hộ Pháp Khổng Lồ", "—", 500_000_000, MAP9_KEY),
+    _F("Côn Băng Hà", "—", 650_000_000, MAP9_KEY, is_boss=True),
+]
+
 _RAW_FISH: dict[str, list[_F]] = {
     "muoi_can": _MUOI_CAN,
     "tram_can": _TRAM_CAN,
@@ -298,9 +339,9 @@ _RAW_FISH: dict[str, list[_F]] = {
     "van_can": _VAN_CAN,
     "muoi_van_can": _MUOI_VAN_CAN,
     "trieu_can": _TRIEU_CAN,
+    "ngan_van_can": _NGAN_VAN_CAN,
+    "son_hai": _SON_HAI,
     # Chưa có ảnh mở khóa — để trống.
-    "ngan_van_can": [],
-    "son_hai": [],
     "ca_gioi_han": [],
     "ca_dac_biet": [],
 }
@@ -331,6 +372,7 @@ def _build_fish() -> tuple[
     by_tier: dict[str, list[FishSpecies]] = {t.key: [] for t in TIERS}
     by_map: dict[str, list[FishSpecies]] = {m.key: [] for m in MAPS}
     boss_keys: set[str] = set()
+    tier_has_explicit_boss: set[str] = set()
 
     for tier_key, rows in _RAW_FISH.items():
         best_in_tier: FishSpecies | None = None
@@ -339,14 +381,20 @@ def _build_fish() -> tuple[
             priced = max(1, round(row.price * PRICE_MULTIPLIER))
             fish = FishSpecies(key=key, name=row.name, weight_label=row.weight_label,
                                 price=priced, tier_key=tier_key, map_key=row.map_key,
-                                weight_can=parse_weight_to_can(row.weight_label))
+                                weight_can=parse_weight_to_can(row.weight_label),
+                                is_boss=row.is_boss)
             all_fish.append(fish)
             by_tier[tier_key].append(fish)
             if row.map_key is not None:
                 by_map[row.map_key].append(fish)
+            if row.is_boss:
+                boss_keys.add(fish.key)
+                tier_has_explicit_boss.add(tier_key)
             if best_in_tier is None or fish.price > best_in_tier.price:
                 best_in_tier = fish
-        if best_in_tier is not None:
+        # Fallback: tier nào KHÔNG có boss tường minh nào (chưa đụng tới
+        # trong đợt làm lại map) thì giữ hành vi cũ — cá đắt nhất làm boss.
+        if best_in_tier is not None and tier_key not in tier_has_explicit_boss:
             boss_keys.add(best_in_tier.key)
 
     return all_fish, {f.key: f for f in all_fish}, by_tier, by_map, boss_keys
@@ -411,6 +459,19 @@ def is_boss_fish(fish_key: str) -> bool:
 def fish_in_map(map_key: str) -> list[FishSpecies]:
     """Cá đã gán vào khu vực `map_key` (cá chưa xác định map trả về rỗng)."""
     return FISH_BY_MAP.get(map_key, [])
+
+
+def map_is_unlocked(map_key: str, level: int, map_items: set[str] | list[str] | None = None) -> bool:
+    """1 map mở được khi đủ cấp độ VÀ (nếu map yêu cầu vật phẩm) đã có vật
+    phẩm đó trong data["map_items"]. Dùng ở MapSelectView (fishing_cog.py)."""
+    m = MAP_BY_KEY.get(map_key)
+    if m is None:
+        return False
+    if level < m.unlock_level:
+        return False
+    if m.requires_item and m.requires_item not in (map_items or ()):
+        return False
+    return True
 
 
 def tiers_unlocked_for_pull(pull: int) -> list[FishTier]:
