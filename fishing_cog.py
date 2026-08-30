@@ -2590,10 +2590,15 @@ class PvPResult:
     loser_dtb_after: int
 
 
-async def run_pvp_battle(user_a: discord.abc.User, user_b: discord.abc.User) -> tuple[PvPResult, dict, dict]:
+async def run_pvp_battle(
+    user_a: discord.abc.User, user_b: discord.abc.User, friendly: bool = False,
+) -> tuple[PvPResult, dict, dict]:
     """Chạy 1 trận PvP hoàn chỉnh: đọc data 2 bên, roll thắng/thua theo
-    trọng số sức mạnh, cập nhật + LƯU ĐĐB/Vàng/thắng-thua/lượt trận trong
-    ngày cho CẢ HAI, trả về (PvPResult, data_a mới, data_b mới)."""
+    trọng số sức mạnh. Nếu `friendly=False` (mặc định, trận xếp hạng):
+    cập nhật + LƯU ĐĐB/Vàng/thắng-thua/lượt trận trong ngày cho CẢ HAI.
+    Nếu `friendly=True` (đấu giao hữu): CHỈ roll kết quả để xem ai thắng,
+    KHÔNG đụng tới ĐĐB/Vàng/lượt trận/thắng-thua — chơi cho vui, không
+    tốn lượt PvP trong ngày. Trả về (PvPResult, data_a mới, data_b mới)."""
     data_a = await aget_user_data(user_a.id)
     data_b = await aget_user_data(user_b.id)
 
@@ -2606,6 +2611,16 @@ async def run_pvp_battle(user_a: discord.abc.User, user_b: discord.abc.User) -> 
 
     dtb_winner = winner_data.get("dtb", 1000)
     dtb_loser = loser_data.get("dtb", 1000)
+
+    if friendly:
+        # Giao hữu: không đổi ĐĐB/Vàng/lượt/thống kê — chỉ hiển thị kết quả.
+        result = PvPResult(
+            winner_id=winner_id, loser_id=loser_id,
+            winner_delta=0, loser_delta=0, gold_reward=0,
+            winner_dtb_after=dtb_winner, loser_dtb_after=dtb_loser,
+        )
+        return result, data_a, data_b
+
     winner_delta = pvp_dtb_delta(dtb_winner, dtb_loser, win=True)
     loser_delta = pvp_dtb_delta(dtb_loser, dtb_winner, win=False)
     # Thắng luôn được ít nhất +1 ĐĐB, thua luôn mất ít nhất -1 (tránh delta
@@ -2641,59 +2656,84 @@ async def run_pvp_battle(user_a: discord.abc.User, user_b: discord.abc.User) -> 
 
 def build_pvp_result_view(
     user_a: discord.abc.User, user_b: discord.abc.User, result: PvPResult,
+    friendly: bool = False,
 ) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     winner = user_a if result.winner_id == user_a.id else user_b
     loser = user_b if result.winner_id == user_a.id else user_a
-    w_label, w_badge = pvp_rank_for_dtb(result.winner_dtb_after)
-    l_label, l_badge = pvp_rank_for_dtb(result.loser_dtb_after)
 
-    container = discord.ui.Container(accent_colour=discord.Colour.red())
-    container.add_item(discord.ui.TextDisplay("# ⚔️ Kết Quả PvP"))
+    container = discord.ui.Container(
+        accent_colour=discord.Colour.teal() if friendly else discord.Colour.red()
+    )
+    container.add_item(discord.ui.TextDisplay(
+        f"# {'🤝 Giao Hữu PvP' if friendly else '⚔️ Kết Quả PvP'}"
+    ))
     container.add_item(discord.ui.TextDisplay(
         f"**{user_a.display_name}** 🆚 **{user_b.display_name}**"
     ))
     container.add_item(discord.ui.Separator())
-    container.add_item(discord.ui.TextDisplay(
-        f"🏆 **{winner.display_name}** chiến thắng!\n"
-        f"{w_badge} `[{w_label}]` — ĐĐB: `{result.winner_dtb_after}` "
-        f"(`+{result.winner_delta}`)\n"
-        f"{E.GOLD} Thưởng: `+{fmt_vang(result.gold_reward)}` Vàng"
-    ))
-    container.add_item(discord.ui.Separator())
-    container.add_item(discord.ui.TextDisplay(
-        f"💀 **{loser.display_name}** thất bại.\n"
-        f"{l_badge} `[{l_label}]` — ĐĐB: `{result.loser_dtb_after}` "
-        f"(`{result.loser_delta}`)"
-    ))
-    container.add_item(discord.ui.Separator())
-    container.add_item(discord.ui.TextDisplay(
-        "-# Kết quả PvP tính tự động dựa trên lực kéo cần câu, cấp độ và "
-        "ĐĐB hiện tại của cả 2 bên — càng mạnh, tỉ lệ thắng càng cao "
-        "(không phải chắc thắng tuyệt đối)."
-    ))
+
+    if friendly:
+        container.add_item(discord.ui.TextDisplay(
+            f"🏆 **{winner.display_name}** thắng ván giao hữu!\n"
+            f"💀 **{loser.display_name}** thua ván này."
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            "-# Đấu giao hữu: không tính ĐĐB, không thưởng Vàng, không tốn "
+            "lượt PvP trong ngày — chỉ để xem ai mạnh hơn."
+        ))
+    else:
+        w_label, w_badge = pvp_rank_for_dtb(result.winner_dtb_after)
+        l_label, l_badge = pvp_rank_for_dtb(result.loser_dtb_after)
+        container.add_item(discord.ui.TextDisplay(
+            f"🏆 **{winner.display_name}** chiến thắng!\n"
+            f"{w_badge} `[{w_label}]` — ĐĐB: `{result.winner_dtb_after}` "
+            f"(`+{result.winner_delta}`)\n"
+            f"{E.GOLD} Thưởng: `+{fmt_vang(result.gold_reward)}` Vàng"
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"💀 **{loser.display_name}** thất bại.\n"
+            f"{l_badge} `[{l_label}]` — ĐĐB: `{result.loser_dtb_after}` "
+            f"(`{result.loser_delta}`)"
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            "-# Kết quả PvP tính tự động dựa trên lực kéo cần câu, cấp độ và "
+            "ĐĐB hiện tại của cả 2 bên — càng mạnh, tỉ lệ thắng càng cao "
+            "(không phải chắc thắng tuyệt đối)."
+        ))
     view.add_item(container)
     return view
 
 
 class PvPChallengeView(discord.ui.LayoutView):
-    """Lời mời thách đấu trực tiếp ("/pvp thách_đấu @user") — người được
-    mời bấm nút Chấp Nhận/Từ Chối. Chỉ đúng người được mời (và người mời,
-    để tự hủy) mới thao tác được nút."""
+    """Lời mời thách đấu trực tiếp ("/pvp thách_đấu" hoặc "/pvp giao_hữu")
+    — người được mời bấm nút Chấp Nhận/Từ Chối. Chỉ đúng người được mời
+    (và người mời, để tự hủy) mới thao tác được nút.
+    `friendly=True` -> trận giao hữu (không tính ĐĐB/Vàng/lượt, xem
+    run_pvp_battle/build_pvp_result_view)."""
 
-    def __init__(self, challenger: discord.abc.User, opponent: discord.abc.User):
+    def __init__(self, challenger: discord.abc.User, opponent: discord.abc.User, friendly: bool = False):
         super().__init__(timeout=120)
         self.challenger = challenger
         self.opponent = opponent
+        self.friendly = friendly
         self._render()
 
     def _render(self) -> None:
         self.clear_items()
-        container = discord.ui.Container(accent_colour=discord.Colour.orange())
-        container.add_item(discord.ui.TextDisplay("# ⚔️ Lời Thách Đấu PvP"))
+        container = discord.ui.Container(
+            accent_colour=discord.Colour.teal() if self.friendly else discord.Colour.orange()
+        )
+        title = "🤝 Lời Mời Giao Hữu PvP" if self.friendly else "⚔️ Lời Thách Đấu PvP"
+        verb = "rủ giao hữu" if self.friendly else "thách đấu"
+        container.add_item(discord.ui.TextDisplay(f"# {title}"))
         container.add_item(discord.ui.TextDisplay(
-            f"**{self.challenger.display_name}** thách đấu **{self.opponent.display_name}**!\n"
+            f"**{self.challenger.display_name}** {verb} **{self.opponent.display_name}**!\n"
             f"`{self.opponent.display_name}` có 120 giây để phản hồi."
+            + ("\n-# Trận giao hữu: không tính ĐĐB, không thưởng, không tốn lượt PvP." if self.friendly else "")
         ))
         row = discord.ui.ActionRow()
         accept_btn = discord.ui.Button(label="Chấp Nhận", style=discord.ButtonStyle.success, emoji="⚔️")
@@ -2708,7 +2748,7 @@ class PvPChallengeView(discord.ui.LayoutView):
     async def _guard(self, interaction: discord.Interaction, allowed: set[int]) -> bool:
         if interaction.user.id not in allowed:
             await interaction.response.send_message(
-                "⚠️ Lời thách đấu này không dành cho bạn!", ephemeral=True,
+                "⚠️ Lời mời này không dành cho bạn!", ephemeral=True,
             )
             return False
         return True
@@ -2718,24 +2758,25 @@ class PvPChallengeView(discord.ui.LayoutView):
             return
         await interaction.response.defer()
 
-        data_c = await aget_user_data(self.challenger.id)
-        data_o = await aget_user_data(self.opponent.id)
-        if pvp_matches_left(data_c) <= 0:
-            await interaction.followup.send(
-                f"⚠️ **{self.challenger.display_name}** đã hết lượt PvP hôm nay "
-                f"(`{PVP_DAILY_MATCH_LIMIT}` trận/ngày), không thể thi đấu.",
-            )
-            return
-        if pvp_matches_left(data_o) <= 0:
-            await interaction.followup.send(
-                f"⚠️ Bạn đã hết lượt PvP hôm nay (`{PVP_DAILY_MATCH_LIMIT}` trận/ngày)!",
-                ephemeral=True,
-            )
-            return
+        if not self.friendly:
+            data_c = await aget_user_data(self.challenger.id)
+            data_o = await aget_user_data(self.opponent.id)
+            if pvp_matches_left(data_c) <= 0:
+                await interaction.followup.send(
+                    f"⚠️ **{self.challenger.display_name}** đã hết lượt PvP hôm nay "
+                    f"(`{PVP_DAILY_MATCH_LIMIT}` trận/ngày), không thể thi đấu.",
+                )
+                return
+            if pvp_matches_left(data_o) <= 0:
+                await interaction.followup.send(
+                    f"⚠️ Bạn đã hết lượt PvP hôm nay (`{PVP_DAILY_MATCH_LIMIT}` trận/ngày)!",
+                    ephemeral=True,
+                )
+                return
 
         self.clear_items()
-        result, _data_c, _data_o = await run_pvp_battle(self.challenger, self.opponent)
-        result_view = build_pvp_result_view(self.challenger, self.opponent, result)
+        result, _data_c, _data_o = await run_pvp_battle(self.challenger, self.opponent, friendly=self.friendly)
+        result_view = build_pvp_result_view(self.challenger, self.opponent, result, friendly=self.friendly)
         await interaction.edit_original_response(view=result_view)
         self.stop()
 
@@ -2745,7 +2786,7 @@ class PvPChallengeView(discord.ui.LayoutView):
         await interaction.response.defer()
         container = discord.ui.Container(accent_colour=discord.Colour.greyple())
         container.add_item(discord.ui.TextDisplay(
-            f"🚫 **{self.opponent.display_name}** đã từ chối lời thách đấu của "
+            f"🚫 **{self.opponent.display_name}** đã từ chối lời mời của "
             f"**{self.challenger.display_name}**."
         ))
         view = discord.ui.LayoutView(timeout=None)
@@ -2757,7 +2798,7 @@ class PvPChallengeView(discord.ui.LayoutView):
         try:
             container = discord.ui.Container(accent_colour=discord.Colour.greyple())
             container.add_item(discord.ui.TextDisplay(
-                f"⏱️ Lời thách đấu của **{self.challenger.display_name}** đã hết hạn "
+                f"⏱️ Lời mời của **{self.challenger.display_name}** đã hết hạn "
                 f"(không phản hồi trong 120s)."
             ))
             view = discord.ui.LayoutView(timeout=None)
@@ -2768,15 +2809,17 @@ class PvPChallengeView(discord.ui.LayoutView):
 
 
 def build_pvp_menu_view(bot: commands.Bot) -> discord.ui.LayoutView:
-    """Khung menu "/pvp" — 2 lựa chọn: Ghép Ngẫu Nhiên (vào hàng đợi thật,
-    xem PvPQueueView) hoặc gợi ý dùng "/pvp_thách_đấu @user" để rủ đích
-    danh (lệnh riêng vì cần tham số user, xem CauCaVanCan.pvp_thach_dau)."""
+    """Khung menu "/pvp ngẫu_nhiên" — nút "Ghép Ngẫu Nhiên" để vào hàng đợi
+    thật (xem _pvp_queue_button_cb). Thách đấu đích danh/giao hữu dùng
+    subcommand riêng "/pvp thách_đấu" và "/pvp giao_hữu" (cần tham số
+    người chơi nên không gộp vào đây)."""
     view = discord.ui.LayoutView(timeout=180)
     container = discord.ui.Container(accent_colour=discord.Colour.dark_red())
     container.add_item(discord.ui.TextDisplay("# ⚔️ Đấu Trường PvP"))
     container.add_item(discord.ui.TextDisplay(
-        "Chọn cách vào trận: ghép ngẫu nhiên với người khác đang chờ, hoặc "
-        "dùng `/pvp_thách_đấu @người-chơi` để rủ đích danh 1 người."
+        "Đang ghép bạn với 1 đối thủ ngẫu nhiên. Muốn rủ đích danh 1 người? "
+        "Dùng `/pvp thách_đấu` (tính ĐĐB) hoặc `/pvp giao_hữu` (chỉ chơi vui, "
+        "không tính ĐĐB)."
     ))
     row = discord.ui.ActionRow()
     btn = discord.ui.Button(label="Ghép Ngẫu Nhiên", style=discord.ButtonStyle.danger, emoji="🎲")
@@ -2785,8 +2828,8 @@ def build_pvp_menu_view(bot: commands.Bot) -> discord.ui.LayoutView:
     container.add_item(row)
     container.add_item(discord.ui.Separator())
     container.add_item(discord.ui.TextDisplay(
-        f"-# Tối đa `{PVP_DAILY_MATCH_LIMIT}` trận PvP/ngày (reset lúc 00:00 UTC). "
-        f"Kết quả tự tính theo lực kéo cần, cấp độ và ĐĐB hiện tại."
+        f"-# Tối đa `{PVP_DAILY_MATCH_LIMIT}` trận PvP xếp hạng/ngày (reset lúc "
+        f"00:00 UTC). Kết quả tự tính theo lực kéo cần, cấp độ và ĐĐB hiện tại."
     ))
     view.add_item(container)
     return view
@@ -3163,9 +3206,18 @@ class CauCaVanCan(commands.Cog):
         view.add_item(container)
         await interaction.followup.send(view=view)
 
-    # -- PvP --
-    @app_commands.command(name="pvp", description="Đấu trường PvP — ghép ngẫu nhiên hoặc thách đấu")
-    async def pvp(self, interaction: discord.Interaction) -> None:
+    # -- PvP: gộp thành 1 nhóm lệnh "/pvp <subcommand>" --
+    # LƯU Ý QUAN TRỌNG: tên THAM SỐ (không phải tên lệnh) của app_commands
+    # PHẢI là ASCII (a-z0-9_) — Discord từ chối đăng ký lệnh có tham số
+    # chứa ký tự có dấu tiếng Việt (đây là lý do "/pvp_thách_đấu" bản cũ
+    # với tham số "đối_thủ"/"người_chơi" không sync/không dùng được). Tên
+    # THAM SỐ giữ ASCII (doi_thu, nguoi_choi) và hiển thị tiếng Việt có dấu
+    # qua @app_commands.rename — giống pattern "code/vang/can_cau..." đã
+    # dùng ổn định ở lệnh /tạo-code bên dưới.
+    pvp_group = app_commands.Group(name="pvp", description="Đấu trường PvP")
+
+    @pvp_group.command(name="ngẫu_nhiên", description="Ghép ngẫu nhiên với người khác đang chờ (tính ĐĐB)")
+    async def pvp_ngau_nhien(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         data = await aget_user_data(interaction.user.id)
         left = pvp_matches_left(data)
@@ -3178,13 +3230,14 @@ class CauCaVanCan(commands.Cog):
             return
         await interaction.followup.send(view=build_pvp_menu_view(self.bot))
 
-    @app_commands.command(name="pvp_thách_đấu", description="Rủ đích danh 1 người chơi vào trận PvP")
-    @app_commands.describe(đối_thủ="Người chơi bạn muốn thách đấu")
-    async def pvp_thach_dau(self, interaction: discord.Interaction, đối_thủ: discord.Member) -> None:
-        if đối_thủ.bot:
+    @pvp_group.command(name="thách_đấu", description="Rủ đích danh 1 người chơi vào trận PvP xếp hạng (tính ĐĐB)")
+    @app_commands.describe(doi_thu="Người chơi bạn muốn thách đấu")
+    @app_commands.rename(doi_thu="đối_thủ")
+    async def pvp_thach_dau(self, interaction: discord.Interaction, doi_thu: discord.Member) -> None:
+        if doi_thu.bot:
             await interaction.response.send_message("⚠️ Không thể thách đấu bot!", ephemeral=True)
             return
-        if đối_thủ.id == interaction.user.id:
+        if doi_thu.id == interaction.user.id:
             await interaction.response.send_message("⚠️ Không thể tự thách đấu chính mình!", ephemeral=True)
             return
 
@@ -3196,24 +3249,42 @@ class CauCaVanCan(commands.Cog):
                 ephemeral=True,
             )
             return
-        opp_data = await aget_user_data(đối_thủ.id)
+        opp_data = await aget_user_data(doi_thu.id)
         if pvp_matches_left(opp_data) <= 0:
             await interaction.followup.send(
-                f"⚠️ **{đối_thủ.display_name}** đã hết lượt PvP hôm nay, thử người khác nhé!",
+                f"⚠️ **{doi_thu.display_name}** đã hết lượt PvP hôm nay, thử người khác nhé!",
                 ephemeral=True,
             )
             return
 
-        view = PvPChallengeView(interaction.user, đối_thủ)
+        view = PvPChallengeView(interaction.user, doi_thu, friendly=False)
         view.message = await interaction.followup.send(
-            content=f"<@{đối_thủ.id}>", view=view, wait=True,
+            content=f"<@{doi_thu.id}>", view=view, wait=True,
         )
 
-    @app_commands.command(name="pvp_hạng", description="Xem hạng Điểm Đấu Bậc (ĐĐB) của bạn hoặc người khác")
-    @app_commands.describe(người_chơi="Bỏ trống để xem hạng của chính bạn")
-    async def pvp_hang(self, interaction: discord.Interaction, người_chơi: Optional[discord.Member] = None) -> None:
+    @pvp_group.command(name="giao_hữu", description="Rủ đấu giao hữu cho vui — không tính ĐĐB, không thưởng, không tốn lượt")
+    @app_commands.describe(doi_thu="Người chơi bạn muốn rủ giao hữu")
+    @app_commands.rename(doi_thu="đối_thủ")
+    async def pvp_giao_huu(self, interaction: discord.Interaction, doi_thu: discord.Member) -> None:
+        if doi_thu.bot:
+            await interaction.response.send_message("⚠️ Không thể giao hữu với bot!", ephemeral=True)
+            return
+        if doi_thu.id == interaction.user.id:
+            await interaction.response.send_message("⚠️ Không thể tự giao hữu với chính mình!", ephemeral=True)
+            return
+
         await interaction.response.defer()
-        target = người_chơi or interaction.user
+        view = PvPChallengeView(interaction.user, doi_thu, friendly=True)
+        view.message = await interaction.followup.send(
+            content=f"<@{doi_thu.id}>", view=view, wait=True,
+        )
+
+    @pvp_group.command(name="hạng", description="Xem hạng Điểm Đấu Bậc (ĐĐB) của bạn hoặc người khác")
+    @app_commands.describe(nguoi_choi="Bỏ trống để xem hạng của chính bạn")
+    @app_commands.rename(nguoi_choi="người_chơi")
+    async def pvp_hang(self, interaction: discord.Interaction, nguoi_choi: Optional[discord.Member] = None) -> None:
+        await interaction.response.defer()
+        target = nguoi_choi or interaction.user
         data = await aget_user_data(target.id)
         dtb = data.get("dtb", 1000)
         label, badge = pvp_rank_for_dtb(dtb)
@@ -3226,7 +3297,7 @@ class CauCaVanCan(commands.Cog):
         container.add_item(discord.ui.TextDisplay(
             f"{badge} `[{label}]` — ĐĐB: `{dtb}`\n"
             f"🏆 Thắng: `{data.get('pvp_wins', 0)}` — 💀 Thua: `{data.get('pvp_losses', 0)}`\n"
-            f"🎯 Lượt PvP còn lại hôm nay: `{left}/{PVP_DAILY_MATCH_LIMIT}`"
+            f"🎯 Lượt PvP xếp hạng còn lại hôm nay: `{left}/{PVP_DAILY_MATCH_LIMIT}`"
         ))
         view.add_item(container)
         await interaction.followup.send(view=view)
