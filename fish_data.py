@@ -88,6 +88,11 @@ class FishSpecies:
     map_key: str | None = None   # khu vực câu, độc lập với tier giá
     weight_can: float | None = None  # weight_label quy đổi ra số "cân" (xem parse_weight_to_can)
     is_boss: bool = False  # boss của khu vực câu (map_key) — đánh dấu tường minh
+    hp_override: int | None = None  # máu (target) CỐ ĐỊNH cho riêng con này —
+        # None = tính theo công thức rod.pull * clicks_needed * hp_buff_multiplier
+        # ở fishing_cog.compute_challenge như bình thường; đặt số ở đây để CHỐT
+        # cứng 1 mức máu base cụ thể bất kể cần câu nào đang dùng (GLOBAL_HP_
+        # MULTIPLIER trong fishing_cog.py vẫn nhân thêm vào số base này).
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,7 @@ class _F(NamedTuple):
     price: int
     map_key: str | None = None
     is_boss: bool = False
+    hp_override: int | None = None  # xem FishSpecies.hp_override
 
 
 # Cấp Mười Cân — Map 1 (Hồ chứa nước bỏ hoang, Lv.1).
@@ -221,13 +227,17 @@ _NGAN_CAN = [
 ]
 
 # Vạn Cân — dàn trải Map 3/4/5/6, phần không thuộc map nào ở lại map_key=None.
+# 4 con boss giá 8-11 triệu (giá đã nhân PRICE_MULTIPLIER) được CHỐT máu base
+# cứng ~870.000 qua hp_override (x GLOBAL_HP_MULTIPLIER ở fishing_cog.py ->
+# ra gần đúng 1 triệu máu hiển thị, theo đúng yêu cầu, KHÔNG còn phụ thuộc
+# công thức rod.pull * clicks_needed như cá thường).
 _VAN_CAN = [
-    _F("Giao Ngư Long", "10.000 cân", 8_000_000, MAP3_KEY, is_boss=True),
-    _F("Cá Mập Biến Dị", "1 vạn cân", 9_500_000, MAP5_KEY, is_boss=True),
+    _F("Giao Ngư Long", "10.000 cân", 8_000_000, MAP3_KEY, is_boss=True, hp_override=870_000),
+    _F("Cá Mập Biến Dị", "1 vạn cân", 9_500_000, MAP5_KEY, is_boss=True, hp_override=870_000),
     _F("Cá Biển Đột Biến", "1 vạn cân", 8_500_000),  # chưa gán map theo yêu cầu mới
-    _F("Tam Đương Gia Bá Địa Hổ", "10.000 cân", 7_800_000, MAP4_KEY, is_boss=True),
+    _F("Tam Đương Gia Bá Địa Hổ", "10.000 cân", 7_800_000, MAP4_KEY, is_boss=True, hp_override=870_000),
     _F("Nhị Đương Gia Bá Địa Hổ", "10.000 cân", 8_000_000, MAP4_KEY),
-    _F("Đại Đương Gia Bá Địa Hổ", "10.000 cân", 8_200_000, MAP4_KEY, is_boss=True),
+    _F("Đại Đương Gia Bá Địa Hổ", "10.000 cân", 8_200_000, MAP4_KEY, is_boss=True, hp_override=870_000),
     _F("Cá Chép Nuốt Trời", "2 vạn cân", 12_000_000, MAP4_KEY, is_boss=True),
     _F("Liên Ưng Lôi Điện", "30.000 cân", 15_000_000, MAP6_KEY),
     _F("Thanh Ngư Sừng Bạc", "50.000 cân", 17_500_000, MAP6_KEY),
@@ -382,7 +392,7 @@ def _build_fish() -> tuple[
             fish = FishSpecies(key=key, name=row.name, weight_label=row.weight_label,
                                 price=priced, tier_key=tier_key, map_key=row.map_key,
                                 weight_can=parse_weight_to_can(row.weight_label),
-                                is_boss=row.is_boss)
+                                is_boss=row.is_boss, hp_override=row.hp_override)
             all_fish.append(fish)
             by_tier[tier_key].append(fish)
             if row.map_key is not None:

@@ -220,6 +220,13 @@ REEL_TIMEOUT_SECONDS = 45.0        # không thao tác quá lâu -> hết hạn c
 IDLE_TENSION_PER_SECOND = 2.0      # % độ căng dây tăng thêm mỗi giây KHÔNG bấm "Kéo!" (buff: giảm từ 3.0)
 IDLE_TICK_SECONDS = 1.0            # tần suất kiểm tra/tăng tension khi đứng yên
 
+# Khi độ căng dây chạm/vượt tension_max, dây KHÔNG đứt ngay lập tức nữa —
+# vào trạng thái "báo động" chạy đếm ngược này trước, cho người chơi cơ
+# hội cuối dùng skill (reduce_tension/slow_tension...) kéo tension xuống
+# lại để cứu ván câu. Hết chừng này giây mà tension vẫn ở mức max thì dây
+# mới đứt thật (xem ReelView._check_line_break).
+LINE_BREAK_GRACE_SECONDS = 5.0
+
 # Tỉ lệ TRƯỢT khi dùng skill "Đập cá" (effect instant_finish) — trước đây
 # ăn chắc 100% quá bá, giờ có 30% khả năng hụt đòn: mất thể lực/lượt dùng
 # như bình thường nhưng cá KHÔNG chết, ván câu vẫn tiếp tục bình thường.
@@ -410,7 +417,17 @@ def compute_challenge(rod: Rod, fish: FishSpecies) -> tuple[float, float]:
     Thiết kế theo tỉ lệ RIÊNG của từng cần (không phụ thuộc tuyệt đối vào
     độ lớn số liệu giữa các cần khác nhau) để cần yếu/mạnh đều cần khoảng
     5-12 lần bấm "Kéo!" hợp lý, cá đắt hơn trong cùng 1 cấp thì dai hơn.
-    Cá giá trên 5/10 triệu xu được buff thêm máu qua hp_buff_multiplier."""
+    Cá giá trên 5/10 triệu xu được buff thêm máu qua hp_buff_multiplier.
+
+    Nếu fish.hp_override được set (vài con boss cần CHỐT cứng 1 mức máu cụ
+    thể, xem fish_data.FishSpecies.hp_override) thì bỏ qua toàn bộ công
+    thức rod.pull * clicks_needed * hp_buff_multiplier ở trên, chỉ còn nhân
+    thêm GLOBAL_HP_MULTIPLIER — máu con đó KHÔNG còn phụ thuộc cần câu."""
+    if fish.hp_override is not None:
+        clicks_needed = random.uniform(4.0, 9.0)
+        target = fish.hp_override * GLOBAL_HP_MULTIPLIER
+        return target, clicks_needed
+
     pool = FISH_BY_TIER[fish.tier_key]
     max_price = max(f.price for f in pool)
     price_ratio = fish.price / max_price  # 0..1, càng lớn cá càng "dai"
@@ -688,6 +705,9 @@ class ReelView(discord.ui.LayoutView):
         self.progress = 0.0
         self.tension_max = 100.0  # % — quy về 0-100 cho dễ hiển thị, tương ứng độ dài dây câu tối đa của cần
         self.tension = 0.0
+        self.tension_break_started_at: Optional[float] = None  # mốc lúc BẮT ĐẦU đếm ngược
+            # LINE_BREAK_GRACE_SECONDS giây "báo động" (tension chạm max) —
+            # None nghĩa là hiện KHÔNG trong trạng thái báo động.
         self.last_click = 0.0
         self.last_action_at = time.time()  # mốc để tính tension tự tăng khi đứng yên
         self.finished = False
@@ -752,6 +772,22 @@ class ReelView(discord.ui.LayoutView):
         self.tension += IDLE_TENSION_PER_SECOND * idle_for * slow_mult * self.tension_mult
         self.last_action_at = now
 
+    def _check_line_break(self, now: float) -> bool:
+        """Kiểm tra dây có THỰC SỰ đứt hay chưa. Khi tension chạm/vượt
+        tension_max LẦN ĐẦU, KHÔNG đứt ngay — bắt đầu đếm ngược
+        LINE_BREAK_GRACE_SECONDS giây "báo động" (self.tension_break_started_at),
+        cho người chơi cơ hội cuối bấm "Kéo!"/dùng skill giảm tension để cứu
+        ván câu. Nếu tension tụt lại dưới tension_max trong lúc đó -> hủy
+        báo động, coi như an toàn. Chỉ khi tension VẪN ở mức max liên tục
+        SUỐT hết khoảng thời gian trên thì mới trả về True (đứt dây thật)."""
+        if self.tension < self.tension_max:
+            self.tension_break_started_at = None
+            return False
+        if self.tension_break_started_at is None:
+            self.tension_break_started_at = now
+            return False
+        return (now - self.tension_break_started_at) >= LINE_BREAK_GRACE_SECONDS
+
     def _apply_pending_damage(self, now: float) -> None:
         """Áp dụng sát thương trả chậm đã đến hạn (effect "slow_then_damage",
         vd Thái Cực Điệu) — gọi cùng lúc với `_apply_idle_tension` ở mọi nơi
@@ -802,11 +838,25 @@ class ReelView(discord.ui.LayoutView):
                 return
 
             if self.tension < self.tension_max:
+                self.tension_break_started_at = None
                 return  # vẫn an toàn, KHÔNG edit UI — chỉ âm thầm cộng dồn
 
-            # Chỉ tới đây (đứt dây do đứng câu quá lâu không kéo) mới thực
-            # sự cần edit message — đây là lần edit DUY NHẤT của idle tick
-            # trong suốt vòng đời ván câu (khác hẳn bản cũ edit mỗi giây).
+            if not self._check_line_break(now):
+                # Vừa chạm ngưỡng max — đang trong LINE_BREAK_GRACE_SECONDS
+                # giây "báo động", CHƯA đứt thật. Vẫn phải edit UI mỗi tick
+                # để hiện đếm ngược cho người chơi kịp phản ứng (dùng skill
+                # giảm tension) — khác _apply_idle_tension bình thường vốn
+                # không edit UI.
+                self._render()
+                try:
+                    await self.message.edit(view=self)
+                except discord.HTTPException:
+                    pass
+                return
+
+            # Chỉ tới đây (hết hẳn LINE_BREAK_GRACE_SECONDS giây báo động mà
+            # tension vẫn ở max) mới thực sự đứt dây — đây là lần edit CUỐI
+            # CÙNG của idle tick trong suốt vòng đời ván câu.
             self.finished = True
             self._idle_tick.stop()
             self.clear_items()
@@ -857,11 +907,19 @@ class ReelView(discord.ui.LayoutView):
             f"\n💢 **{self._last_skill_missed} đã TRƯỢT!** Đòn đập cá hụt, không mất máu cá.\n"
             if self._last_skill_missed else ""
         )
+        break_note = ""
+        if self.tension_break_started_at is not None:
+            remain = max(0.0, LINE_BREAK_GRACE_SECONDS - (now - self.tension_break_started_at))
+            break_note = (
+                f"\n🚨 **DÂY CĂNG HẾT CỠ, SẮP ĐỨT!** Còn `{remain:.0f}s` để cứu — "
+                f"mau dùng skill giảm căng dây!\n"
+            )
         container.add_item(discord.ui.TextDisplay(
             f"**{catch_label}** `{self.fish.name}`\n"
             f"**Có gì đó đang cắn câu!** Bấm **Kéo!** để kéo cá vào, "
             f"nhưng đừng kéo quá tay kẻo đứt dây.\n"
-            f"{miss_note}\n"
+            f"{miss_note}"
+            f"{break_note}\n"
             f"{E.HEALTH} Máu cá: `{hp_current:,}/{hp_max:,}`\n"
             f"{make_bar(hp_ratio)}\n"
             f"Độ căng dây câu: `{tension_ratio:.0%}`{slow_note}\n"
@@ -967,7 +1025,7 @@ class ReelView(discord.ui.LayoutView):
                 self._idle_tick.stop()
                 await self._finish(interaction, success=True)
                 return
-            if self.tension >= self.tension_max:
+            if self._check_line_break(now):
                 self.finished = True
                 self._idle_tick.stop()
                 await self._finish(interaction, success=False)
@@ -1073,16 +1131,17 @@ class ReelView(discord.ui.LayoutView):
                 else:
                     self.progress += self.rod.pull * skill.value
 
-            # Idle tick không còn tự kiểm tra mỗi giây -> phải tự check ở
-            # đây: nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC
-            # skill kịp giảm nó xuống (đứng lâu rồi mới bấm skill), ván câu
-            # coi như đứt dây, dùng skill không kịp "cứu" nữa.
+            # Nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC skill
+            # kịp giảm nó xuống thì cũng KHÔNG đứt ngay nữa — vẫn còn
+            # LINE_BREAK_GRACE_SECONDS giây báo động (xem _check_line_break),
+            # đây chính là chiêu skill "cứu" ván câu vào phút chót nếu skill
+            # kéo tension xuống dưới max kịp trong khoảng thời gian đó.
             if self.progress >= self.target:
                 self.finished = True
                 self._idle_tick.stop()
                 await self._finish(interaction, success=True)
                 return
-            if self.tension >= self.tension_max:
+            if self._check_line_break(now):
                 self.finished = True
                 self._idle_tick.stop()
                 await self._finish(interaction, success=False)
