@@ -2836,6 +2836,24 @@ def build_pvp_menu_view(bot: commands.Bot) -> discord.ui.LayoutView:
 
 
 async def _pvp_queue_button_cb(interaction: discord.Interaction, bot: commands.Bot) -> None:
+    try:
+        await _pvp_queue_button_cb_inner(interaction, bot)
+    except Exception:
+        # Bọc toàn bộ luồng ghép trận: nếu có lỗi bất ngờ (Firebase timeout,
+        # user rời server giữa chừng...) mà không catch, Discord client sẽ
+        # hiện nút bấm "quay/suy nghĩ mãi" rồi báo lỗi mơ hồ — báo rõ cho
+        # người chơi thay vì im lặng treo, đồng thời KHÔNG che giấu lỗi
+        # thật (vẫn re-raise để log/console thấy được nếu bot có logging).
+        try:
+            await interaction.followup.send(
+                "⚠️ Có lỗi xảy ra khi ghép trận PvP, vui lòng thử lại!", ephemeral=True,
+            )
+        except discord.HTTPException:
+            pass
+        raise
+
+
+async def _pvp_queue_button_cb_inner(interaction: discord.Interaction, bot: commands.Bot) -> None:
     await interaction.response.defer()
 
     data = await aget_user_data(interaction.user.id)
@@ -2856,13 +2874,13 @@ async def _pvp_queue_button_cb(interaction: discord.Interaction, bot: commands.B
     waiting_view.add_item(waiting_container)
     msg = await interaction.followup.send(view=waiting_view, wait=True)
 
-    match = await apvp_queue_join_or_match(interaction.user.id, interaction.channel_id)
+    match = await apvp_queue_join_or_match(interaction.user.id, interaction.channel_id, msg.id)
 
     if match["status"] == "waiting":
-        # Không có ai chờ sẵn — bạn giờ là người chờ, không làm gì thêm ở
-        # đây; người kế tiếp bấm "Ghép Ngẫu Nhiên" sẽ tự ghép với bạn và
-        # cả 2 phía tự gửi kết quả riêng (xem nhánh "matched" bên dưới).
-        # Tin nhắn chờ giữ nguyên tới khi TTL hết hạn (không tự sửa lại).
+        # Không có ai chờ sẵn — bạn giờ là người chờ. Tin nhắn `msg` (đã
+        # lưu message_id vào Firebase ở trên) sẽ được người ghép SAU tự
+        # fetch + sửa lại thành kết quả trận đấu khi họ bấm nút kế tiếp
+        # (xem nhánh "matched" bên dưới) — không cần làm gì thêm ở đây.
         return
 
     opponent_id = match["opponent_id"]
@@ -2901,16 +2919,35 @@ async def _pvp_queue_button_cb(interaction: discord.Interaction, bot: commands.B
 
     result, _data_you, _data_opp = await run_pvp_battle(interaction.user, opponent)
     result_view = build_pvp_result_view(interaction.user, opponent, result)
+    # Sửa tin nhắn của CHÍNH BẠN (người vừa ghép, tới sau).
     await msg.edit(view=result_view)
 
-    # Thông báo thêm ở kênh (opponent không nhìn thấy followup ephemeral
-    # của người kia) — gửi 1 bản kết quả y hệt công khai trong kênh để cả
-    # 2 bên đều thấy, dùng đúng channel_id lưu lúc bạn vào hàng đợi.
+    # Sửa NỐT tin nhắn "đang tìm đối thủ..." của ĐỐI THỦ (người đã chờ sẵn
+    # trước đó, tới trước) thành cùng 1 kết quả — đây là bản sửa quan trọng
+    # khiến người chờ đầu tiên KHÔNG còn bị kẹt mãi ở màn hình "đang tìm
+    # đối thủ..." như trước (bug gốc). Dùng channel_id/message_id lưu lại
+    # lúc họ vào hàng đợi, không phụ thuộc followup token đã hết hạn.
+    opp_channel_id = match.get("opponent_channel_id")
+    opp_message_id = match.get("opponent_message_id")
+    if opp_channel_id and opp_message_id:
+        try:
+            opp_channel = bot.get_channel(opp_channel_id) or await bot.fetch_channel(opp_channel_id)
+            opp_msg = await opp_channel.fetch_message(opp_message_id)
+            await opp_msg.edit(view=build_pvp_result_view(opponent, interaction.user, result))
+        except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+            # Không sửa được tin nhắn cũ của đối thủ (vd bị xóa, bot mất
+            # quyền) -> vẫn gửi thêm 1 bản công khai trong kênh bên dưới để
+            # họ không bị bỏ sót kết quả hoàn toàn.
+            pass
+
+    # Thông báo thêm công khai trong kênh (mention cả 2 bên) — đảm bảo dù
+    # sửa tin nhắn cũ có thất bại thì cả 2 vẫn thấy được kết quả ở đâu đó.
     channel = interaction.channel
     if channel is not None:
         try:
             await channel.send(
-                content=f"<@{opponent_id}>", view=build_pvp_result_view(interaction.user, opponent, result),
+                content=f"<@{interaction.user.id}> <@{opponent_id}>",
+                view=build_pvp_result_view(interaction.user, opponent, result),
             )
         except discord.HTTPException:
             pass

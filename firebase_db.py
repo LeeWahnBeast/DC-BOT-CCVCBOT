@@ -320,18 +320,26 @@ async def aredeem_code(code: str, user_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Hàng đợi ghép trận PvP ngẫu nhiên ("/pvp" -> nút "Ghép Ngẫu Nhiên", xem
-# PvPQueueView trong fishing_cog.py). 1 SLOT DUY NHẤT toàn bot (không theo
-# guild) — người đầu tiên bấm sẽ "đứng chờ" trong slot, người thứ 2 bấm sẽ
-# ghép luôn với người đang chờ và XÓA slot. Dùng transaction để 2 người
-# cùng bấm gần như đồng thời không bị ghép nhầm/ghi đè nhau.
+# Hàng đợi ghép trận PvP ngẫu nhiên ("/pvp ngẫu_nhiên" -> nút "Ghép Ngẫu
+# Nhiên", xem _pvp_queue_button_cb trong fishing_cog.py). 1 SLOT DUY NHẤT
+# toàn bot (không theo guild) — người đầu tiên bấm sẽ "đứng chờ" trong
+# slot, người thứ 2 bấm sẽ ghép luôn với người đang chờ và XÓA slot. Dùng
+# transaction để 2 người cùng bấm gần như đồng thời không bị ghép nhầm/ghi
+# đè nhau.
 #
 #   fishing/pvp_queue/
 #     user_id: int
 #     joined_at: float
-#     channel_id: int      # kênh để gửi thông báo ghép trận thành công
-#     interaction_token: str | None   # không dùng để followup (token hết hạn
-#                                       # nhanh) — chỉ lưu tham khảo/debug
+#     channel_id: int      # kênh chứa tin nhắn "đang tìm đối thủ..." của
+#                            # người chờ -> để người ghép SAU tự sửa lại
+#                            # đúng tin nhắn đó (channel_id + message_id),
+#                            # KHÔNG dùng followup token (hết hạn nhanh và
+#                            # chỉ dùng được bởi chính interaction đã tạo ra
+#                            # nó) — đây là lý do bản trước người chờ ĐẦU
+#                            # TIÊN bị kẹt mãi ở "đang tìm đối thủ..." vì
+#                            # không có cách nào sửa lại tin của họ khi có
+#                            # người ghép tới sau.
+#     message_id: int      # id tin nhắn "đang tìm đối thủ..." của người chờ
 # ---------------------------------------------------------------------------
 PVP_QUEUE_ROOT = "fishing/pvp_queue"
 # Hết hạn hàng đợi sau ngần này giây nếu không ai ghép được — tránh 1 người
@@ -339,12 +347,15 @@ PVP_QUEUE_ROOT = "fishing/pvp_queue"
 PVP_QUEUE_TTL_SECONDS = 180
 
 
-def pvp_queue_join_or_match(user_id: int, channel_id: int) -> dict:
+def pvp_queue_join_or_match(user_id: int, channel_id: int, message_id: int) -> dict:
     """Thử vào hàng đợi ghép ngẫu nhiên. TRẢ VỀ 1 TRONG 2 TRẠNG THÁI:
     - {"status": "waiting"} — chưa có ai chờ sẵn (hoặc người chờ đã hết hạn
       / chính là bạn) -> bạn được ghi vào slot chờ, chờ người kế tiếp.
-    - {"status": "matched", "opponent_id": int} — đã có người chờ sẵn (khác
-      bạn) -> ghép ngay với người đó, xóa slot chờ.
+    - {"status": "matched", "opponent_id": int, "opponent_channel_id": int,
+      "opponent_message_id": int} — đã có người chờ sẵn (khác bạn) -> ghép
+      ngay với người đó, xóa slot chờ. Bên gọi (fishing_cog.py) dùng
+      opponent_channel_id/opponent_message_id để SỬA LẠI đúng tin nhắn
+      "đang tìm đối thủ..." của người đã chờ sẵn thành kết quả trận đấu.
     Dùng transaction nên an toàn với 2 lượt bấm gần như đồng thời."""
     ref = db.reference(PVP_QUEUE_ROOT)
     outcome = {"status": "waiting", "opponent_id": None}
@@ -358,10 +369,18 @@ def pvp_queue_join_or_match(user_id: int, channel_id: int) -> dict:
             and current.get("user_id") != user_id
             and (now - current.get("joined_at", 0)) < PVP_QUEUE_TTL_SECONDS
         ):
-            outcome = {"status": "matched", "opponent_id": current.get("user_id")}
+            outcome = {
+                "status": "matched",
+                "opponent_id": current.get("user_id"),
+                "opponent_channel_id": current.get("channel_id"),
+                "opponent_message_id": current.get("message_id"),
+            }
             return None  # xóa slot chờ, đã ghép xong
         outcome = {"status": "waiting", "opponent_id": None}
-        return {"user_id": user_id, "joined_at": now, "channel_id": channel_id}
+        return {
+            "user_id": user_id, "joined_at": now,
+            "channel_id": channel_id, "message_id": message_id,
+        }
 
     ref.transaction(_txn)
     return outcome
@@ -380,8 +399,8 @@ def pvp_queue_leave(user_id: int) -> None:
     ref.transaction(_txn)
 
 
-async def apvp_queue_join_or_match(user_id: int, channel_id: int) -> dict:
-    return await asyncio.to_thread(pvp_queue_join_or_match, user_id, channel_id)
+async def apvp_queue_join_or_match(user_id: int, channel_id: int, message_id: int) -> dict:
+    return await asyncio.to_thread(pvp_queue_join_or_match, user_id, channel_id, message_id)
 
 
 async def apvp_queue_leave(user_id: int) -> None:
