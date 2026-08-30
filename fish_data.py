@@ -183,7 +183,7 @@ class _F(NamedTuple):
 _MUOI_CAN = [
     _F("Cá Thanh Hoa", "5 cân", 15_000, MAP1_KEY),
     _F("Cá Vàng", "10 cân", 20_000, MAP1_KEY),
-    _F("Cá Chép Nhỏ", "10 cân", 25_000, MAP1_KEY),
+    _F("Cá Chép Đỏ", "10 cân", 25_000, MAP1_KEY),
     _F("Cá Liên Trắng", "20 cân", 30_000, MAP1_KEY),
     _F("Cá Trê", "30 cân", 40_000, MAP1_KEY),
     _F("Cá Diếc", "40 cân", 50_000, MAP1_KEY),

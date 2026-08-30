@@ -78,6 +78,12 @@ class Skill:
     uses_per_session: int = 1     # số lần dùng được tối đa trong 1 ván câu
     bonus_damage_pct: float = 0.0   # chỉ dùng cho "slow_then_damage": % máu cá gây thêm khi hiệu lực slow kết thúc
     slow_value: float = 0.0          # chỉ dùng cho "reduce_then_slow": % làm chậm tốc độ tăng dây
+    cooldown_s: float = 0.0           # thời gian hồi chiêu (giây) TRƯỚC KHI dùng lại được
+        # skill này trong CÙNG 1 ván câu — 0 nghĩa là không có hồi chiêu
+        # riêng (chỉ bị chặn bởi uses_per_session như cũ). Skill nào có
+        # cooldown_s > 0 nên đặt uses_per_session > 1 (vd 5) để hồi chiêu
+        # thực sự là ĐIỀU KIỆN CHÍNH giới hạn việc dùng lại, không phải
+        # uses_per_session nữa — xem ReelView._on_skill/skill_cooldown_until.
 
 
 SKILL_SHOP: list[Skill] = [
@@ -94,63 +100,78 @@ SKILL_SHOP: list[Skill] = [
     # =======================================================================
     Skill(
         "vung_nhu_cho_gia", "Vững Như Chó Già", "🐕", "slow_tension", 0.25, 15, 2_000_000,
+        cooldown_s=6, uses_per_session=5,
         duration_s=5,
         description="Ghì chặt cần câu như chó già bám đất, giữ dây câu căng chậm lại trong ít giây.",
     ),
     Skill(
         "ma_dat_dieu_phap", "Mã Đạt Điếu Pháp", "🪢", "reduce_tension", 0.20, 15, 6_000_000,
+        cooldown_s=6, uses_per_session=5,
         description="Giật nhẹ dây câu đúng lúc, trừ ngay một phần nhỏ độ căng dây hiện tại.",
     ),
     Skill(
         "dai_ma_bai_thoai", "Đại Ma Bại Thoái", "🌀", "reduce_tension", 0.22, 18, 10_000_000,
+        cooldown_s=7, uses_per_session=5,
         description="Giật lùi dây câu, ép con mồi lùi bước, trừ ngay một phần độ căng dây.",
     ),
     Skill(
         "soai_ca_ha_son", "Soái Ca Hạ Sơn", "🏔️", "reduce_tension", 0.40, 25, 16_000_000,
+        cooldown_s=10, uses_per_session=5,
         description="Giật mạnh dây câu như hạ sơn thị uy, trừ ngay khá nhiều độ căng dây hiện tại.",
     ),
     Skill(
         "hoi_thu_thao", "Hồi Thủ Thao", "🤲", "reduce_tension", 0.30, 22, 22_000_000,
+        cooldown_s=9, uses_per_session=5,
         description="Kéo dây câu về đúng nhịp, trừ ngay một phần độ căng dây hiện tại.",
     ),
     Skill(
         "lao_han_dap_xe", "Lão Hán Đạp Xe", "🚲", "reduce_tension", 0.32, 24, 28_000_000,
+        cooldown_s=10, uses_per_session=5,
         description="Kéo dây câu đều đặn như đạp xe của lão hán, trừ ngay một phần độ căng dây.",
     ),
     Skill(
         "phi_thien_vo_cuc_dieu", "Phi Thiên Vô Cực Điếu", "🕊️", "reduce_tension", 0.35, 26, 35_000_000,
+        cooldown_s=10, uses_per_session=5,
         description="Kéo dây câu bay bổng vô cực, trừ ngay một phần kha khá độ căng dây.",
     ),
     Skill(
         "lao_nai_nai_toan_bi_oa", "Lão Nãi Nãi Toàn Bị Oa", "👵", "reduce_tension", 0.50, 35, 45_000_000,
+        cooldown_s=14, uses_per_session=5,
         description="Kéo mạnh dây câu bằng công phu lão luyện, trừ ngay phần lớn độ căng dây.",
     ),
     Skill(
         "te_thien_dai_dieu", "Tề Thiên Đại Điếu", "🐒", "reduce_tension", 0.52, 36, 55_000_000,
+        cooldown_s=14, uses_per_session=5,
         description="Kéo mạnh dây câu như Tề Thiên đại náo, trừ ngay phần lớn độ căng dây.",
     ),
     Skill(
         "cong_ke_ha_dan", "Công Kê Hạ Đản", "🐓", "reduce_tension", 0.42, 28, 65_000_000,
+        cooldown_s=11, uses_per_session=5,
         description="Giật mạnh dây câu dứt khoát, trừ ngay khá nhiều độ căng dây hiện tại.",
     ),
     Skill(
         "dieu_long_ban_ho", "Điếu Long Bàn Hổ", "🐉", "reduce_tension", 0.45, 30, 80_000_000,
+        cooldown_s=12, uses_per_session=5,
         description="Giật mạnh dây câu thế rồng cuộn hổ chầu, trừ ngay khá nhiều độ căng dây.",
     ),
     Skill(
         "hoanh_tao_thien_quan", "Hoành Tảo Thiên Quân", "⚔️", "reduce_tension", 0.48, 32, 95_000_000,
+        cooldown_s=13, uses_per_session=5,
         description="Giật mạnh dây câu quét ngang vạn quân, trừ ngay khá nhiều độ căng dây.",
     ),
     Skill(
         "xuyen_thien_hau_chi_dieu", "Xuyên Thiên Hầu Chi Điếu", "🐒", "reduce_tension", 0.65, 45, 115_000_000,
+        cooldown_s=18, uses_per_session=5,
         description="Kéo dây câu siêu mạnh xuyên thấu trời cao, trừ ngay rất nhiều độ căng dây.",
     ),
     Skill(
         "da_ngu_bong_phap", "Đả Ngư Bổng Pháp", "💥", "reduce_tension", 0.55, 38, 135_000_000,
+        cooldown_s=15, uses_per_session=5,
         description="Giật mạnh dây câu bằng bổng pháp, trừ ngay phần lớn độ căng dây hiện tại.",
     ),
     Skill(
         "hoi_anh_chi_thu", "Hồi Ảnh Chi Thủ", "🔄", "reduce_tension", 0.60, 42, 160_000_000,
+        cooldown_s=17, uses_per_session=5,
         description="Kéo dây câu cực mạnh bằng thủ pháp xoay ảnh, trừ ngay phần lớn độ căng dây.",
     ),
     Skill(
@@ -181,10 +202,12 @@ SKILL_SHOP: list[Skill] = [
     ),
     Skill(
         "can_khon_dai_na_ngu", "Càn Khôn Đại Na Ngư", "🌪️", "reduce_tension", 0.70, 48, 250_000_000,
+        cooldown_s=19, uses_per_session=5,
         description="Kéo dây câu cực mạnh, xoay chuyển càn khôn dịch chuyển cả con mồi, trừ ngay rất nhiều độ căng dây.",
     ),
     Skill(
         "toan_chan_dieu_phap", "Toàn Chân Điếu Pháp", "🧘", "reduce_tension", 0.58, 40, 180_000_000,
+        cooldown_s=16, uses_per_session=5,
         description="Kéo dây câu mạnh theo tâm pháp Toàn Chân, trừ ngay phần lớn độ căng dây hiện tại.",
     ),
     Skill(
@@ -198,11 +221,13 @@ SKILL_SHOP: list[Skill] = [
     # -- Thục Đạo Sơn Điếu Pháp (bộ 3 chiêu: Đương/Quan/Khai) --------------
     Skill(
         "can_mon_duong", "Can Môn Đương", "🚪", "slow_tension", 0.55, 30, 150_000_000,
+        cooldown_s=12, uses_per_session=5,
         duration_s=8,
         description="Trấn giữ cửa ải Can Môn, giữ dây câu căng chậm lại hẳn trong ít giây.",
     ),
     Skill(
         "can_mon_quan", "Can Môn Quan", "🗝️", "reduce_then_slow", 0.35, 40, 210_000_000,
+        cooldown_s=16, uses_per_session=5,
         duration_s=6, slow_value=0.40,
         description="Vừa giật vừa kéo phá cửa ải Can Môn, trừ ngay một phần độ căng dây và làm chậm tốc độ tăng tiếp theo.",
     ),
@@ -224,14 +249,17 @@ SKILL_SHOP: list[Skill] = [
     ),
     Skill(
         "can_thuong", "Cản Thương", "🛡️", "reduce_tension", 0.38, 26, 120_000_000,
+        cooldown_s=10, uses_per_session=5,
         description="Giật dây câu ngăn cản đà tiến của cá, trừ ngay một phần độ căng dây hiện tại.",
     ),
     Skill(
         "tuong_thuong", "Tưởng Thương", "🧠", "reduce_tension", 0.44, 30, 145_000_000,
+        cooldown_s=12, uses_per_session=5,
         description="Kéo dây câu đánh vào tâm trí con mồi, trừ ngay khá nhiều độ căng dây hiện tại.",
     ),
     Skill(
         "tu_thuong", "Tử Thương", "☠️", "reduce_tension", 0.68, 46, 500_000_000,
+        cooldown_s=18, uses_per_session=5,
         description="Giật mạnh dây câu đòn chí mạng cuối cùng của Thất Thương Quyền, trừ ngay gần hết độ căng dây.",
     ),
 ]

@@ -113,6 +113,17 @@ def _default_data() -> dict:
         # dùng riêng cho bảng xếp hạng cân nặng (/bảng_xếp_hạng), KHÔNG
         # phải khối lượng đang tồn trong kho (không trừ khi bán cá).
         "total_weight_can": 0.0,
+        # --- PvP (/pvp) ---
+        # dtb = Điểm Đấu Bậc (ELO PvP riêng, KHÔNG liên quan "score" câu cá
+        # ở trên). Xem PVP_RANK_TIERS trong fishing_cog.py.
+        "dtb": 1000,
+        "pvp_wins": 0,
+        "pvp_losses": 0,
+        # Số trận /pvp đã đấu trong ngày hiện tại (reset khi sang ngày UTC
+        # mới) + mốc ngày (chuỗi "YYYY-MM-DD") để biết khi nào cần reset —
+        # xem pvp_matches_left_today() trong fishing_cog.py.
+        "pvp_matches_today": 0,
+        "pvp_matches_date": "",
     }
 
 
@@ -306,3 +317,72 @@ async def acreate_code(
 
 async def aredeem_code(code: str, user_id: int) -> dict:
     return await asyncio.to_thread(redeem_code, code, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Hàng đợi ghép trận PvP ngẫu nhiên ("/pvp" -> nút "Ghép Ngẫu Nhiên", xem
+# PvPQueueView trong fishing_cog.py). 1 SLOT DUY NHẤT toàn bot (không theo
+# guild) — người đầu tiên bấm sẽ "đứng chờ" trong slot, người thứ 2 bấm sẽ
+# ghép luôn với người đang chờ và XÓA slot. Dùng transaction để 2 người
+# cùng bấm gần như đồng thời không bị ghép nhầm/ghi đè nhau.
+#
+#   fishing/pvp_queue/
+#     user_id: int
+#     joined_at: float
+#     channel_id: int      # kênh để gửi thông báo ghép trận thành công
+#     interaction_token: str | None   # không dùng để followup (token hết hạn
+#                                       # nhanh) — chỉ lưu tham khảo/debug
+# ---------------------------------------------------------------------------
+PVP_QUEUE_ROOT = "fishing/pvp_queue"
+# Hết hạn hàng đợi sau ngần này giây nếu không ai ghép được — tránh 1 người
+# bấm rồi thoát, chiếm slot vĩnh viễn khiến không ai ghép được nữa.
+PVP_QUEUE_TTL_SECONDS = 180
+
+
+def pvp_queue_join_or_match(user_id: int, channel_id: int) -> dict:
+    """Thử vào hàng đợi ghép ngẫu nhiên. TRẢ VỀ 1 TRONG 2 TRẠNG THÁI:
+    - {"status": "waiting"} — chưa có ai chờ sẵn (hoặc người chờ đã hết hạn
+      / chính là bạn) -> bạn được ghi vào slot chờ, chờ người kế tiếp.
+    - {"status": "matched", "opponent_id": int} — đã có người chờ sẵn (khác
+      bạn) -> ghép ngay với người đó, xóa slot chờ.
+    Dùng transaction nên an toàn với 2 lượt bấm gần như đồng thời."""
+    ref = db.reference(PVP_QUEUE_ROOT)
+    outcome = {"status": "waiting", "opponent_id": None}
+    now = time.time()
+
+    def _txn(current):
+        nonlocal outcome
+        if (
+            current
+            and isinstance(current, dict)
+            and current.get("user_id") != user_id
+            and (now - current.get("joined_at", 0)) < PVP_QUEUE_TTL_SECONDS
+        ):
+            outcome = {"status": "matched", "opponent_id": current.get("user_id")}
+            return None  # xóa slot chờ, đã ghép xong
+        outcome = {"status": "waiting", "opponent_id": None}
+        return {"user_id": user_id, "joined_at": now, "channel_id": channel_id}
+
+    ref.transaction(_txn)
+    return outcome
+
+
+def pvp_queue_leave(user_id: int) -> None:
+    """Rời hàng đợi (hủy chờ) — chỉ xóa slot nếu đúng là bạn đang chờ, tránh
+    xóa nhầm slot của người khác vừa mới vào ngay sau khi bạn timeout/hủy."""
+    ref = db.reference(PVP_QUEUE_ROOT)
+
+    def _txn(current):
+        if current and isinstance(current, dict) and current.get("user_id") == user_id:
+            return None
+        return current
+
+    ref.transaction(_txn)
+
+
+async def apvp_queue_join_or_match(user_id: int, channel_id: int) -> dict:
+    return await asyncio.to_thread(pvp_queue_join_or_match, user_id, channel_id)
+
+
+async def apvp_queue_leave(user_id: int) -> None:
+    await asyncio.to_thread(pvp_queue_leave, user_id)
