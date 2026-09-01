@@ -26,6 +26,14 @@ Thời tiết ảnh hưởng tới ván câu đang diễn ra (áp dụng tại t
 - tension_break_note: không phải field số liệu — "dây câu dễ đứt hơn"
   được thể hiện qua tension_mult > 1.0 ở trên (tăng tốc độ tăng độ căng
   dây => dễ chạm ngưỡng đứt dây hơn), KHÔNG có field riêng.
+- boosted_map_keys: KHÔNG còn hệ thống /chọn_map (đã bỏ toàn bộ khu vực
+  câu) — cá câu được giờ random HOÀN TOÀN, chỉ vài nhóm cá "xịn" (được
+  gắn map_key cũ mang tính lịch sử) là CẦN ĐÚNG THỜI TIẾT mới xuất hiện
+  được, thay cho việc cần đúng khu vực như trước. field này liệt kê
+  map_key nào được "mở khóa" khi thời tiết này đang hoạt động — xem
+  fish_data.MAP_WEATHER_REQUIREMENT (nơi thực sự map map_key -> weather
+  key) và fishing_cog.roll_fish (nơi lọc pool cá theo đó). Để trống ()
+  nghĩa là thời tiết này không mở thêm cá đặc biệt nào.
 """
 
 from __future__ import annotations
@@ -45,13 +53,27 @@ class Weather:
     boss_weight_mult: float = 1.0
     junk_chance_delta: float = 0.0
     junk_chance_cap: float | None = None  # None = dùng trần chung JUNK_CHANCE_CAP
+    boosted_map_keys: tuple[str, ...] = ()  # xem ghi chú boosted_map_keys ở đầu file
 
+
+# Key + emoji của thời tiết "bình thường" (mặc định, không có gì đặc biệt) —
+# <:sun:1543749506070487110> theo đúng yêu cầu, KHÔNG hiệu ứng gì (mọi field
+# số liệu ở mức trung tính) và có trọng số cao nhất để đây là trạng thái
+# phổ biến nhất, các thời tiết đặc biệt bên dưới chỉ thỉnh thoảng random ra.
+WEATHER_BINH_THUONG_KEY = "binh_thuong"
 
 WEATHERS: list[Weather] = [
     Weather(
+        WEATHER_BINH_THUONG_KEY, "Bình Thường", "<:sun:1543749506070487110>",
+        "Trời quang mây tạnh, không có gì đặc biệt — cá cắn câu như ngày thường.",
+        luck_delta=0.0, tension_mult=1.0,
+    ),
+    Weather(
         "mua", "Mưa", "<:mua:1543495250893348874>",
-        "Trời đổ mưa, mặt nước xao động khiến cá cắn câu nhạy hơn hẳn.",
+        "Trời đổ mưa, mặt nước xao động khiến cá cắn câu nhạy hơn hẳn — đây cũng "
+        "là lúc Hà La Ngư (Sơn Hải) trồi lên mặt nước, chỉ xuất hiện khi trời mưa.",
         luck_delta=0.10, tension_mult=0.90, junk_chance_delta=-0.05,
+        boosted_map_keys=("vuc_sau_ha_la",),  # phải khớp fish_data.MAP7_KEY
     ),
     Weather(
         "giong", "Giông", "<:giong:1543495327749767248>",
@@ -94,8 +116,10 @@ WEATHERS: list[Weather] = [
 ]
 WEATHER_BY_KEY: dict[str, Weather] = {w.key: w for w in WEATHERS}
 
-# Trọng số random mỗi giờ — Bảy Sắc Cầu Vồng hiếm nhất.
+# Trọng số random mỗi giờ — "Bình Thường" chiếm phần lớn (trạng thái mặc
+# định), Bảy Sắc Cầu Vồng hiếm nhất trong các thời tiết đặc biệt.
 WEATHER_WEIGHTS: dict[str, float] = {
+    WEATHER_BINH_THUONG_KEY: 100.0,
     "mua": 25.0,
     "giong": 18.0,
     "dem": 20.0,

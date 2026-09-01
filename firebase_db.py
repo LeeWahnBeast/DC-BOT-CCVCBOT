@@ -27,7 +27,6 @@ CẤU TRÚC DỮ LIỆU (Realtime Database)
           exp: int                     # EXP hiện có (đã trừ phần dùng để lên cấp)
           energy: int                  # thể lực hiện có (thanh năng lượng riêng, hao theo lần bấm "Kéo!")
           energy_updated_at: float     # epoch giây lần cuối tính hồi thể lực (dùng để hồi lazy theo thời gian)
-          current_map: str | None      # key khu vực câu đang chọn (fish_data.MAPS) — None = câu tất cả khu vực
           unlocked_skills: [str]        # danh sách key skill câu cá đã mở khóa (skill_data.SKILL_SHOP)
           equipped_skills: [str|None]     # ô trang bị skill (mặc định 3 + đã mua thêm), mỗi ô None hoặc key skill
           extra_skill_slots: int          # số ô trang bị đã MUA THÊM (ngoài 3 ô mặc định) — xem skill_data.next_slot_price
@@ -102,10 +101,6 @@ def _default_data() -> dict:
         # sẽ thấy energy đã đầy (>= max) và chỉ cập nhật lại mốc thời gian, an toàn.
         "energy": 500,
         "energy_updated_at": 0.0,
-        "current_map": None,
-        # Vật phẩm khu vực câu (vd "Bản Đồ Vực Sâu Hà La" mở khóa Map 7) —
-        # danh sách key, không phải cá/đồ bán được nên tách riêng inventory.
-        "map_items": [],
         "unlocked_skills": [],
         "equipped_skills": [None, None, None],
         "extra_skill_slots": 0,

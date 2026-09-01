@@ -38,11 +38,12 @@ CƠ CHẾ CÂU CÁ (MINIGAME "KÉO")
 - Tên cá và MÁU CÁ (dạng thanh, giảm dần từ 100% -> 0% theo mỗi lần bấm
   "Kéo!") hiển thị ngay khi bắt đầu ván câu, không chỉ khi câu xong.
 - KỸ NĂNG (skill_data.py): mỗi người mặc định có 3 ô trang bị, mua/mở khóa
-  qua /shop_kỹ_năng. Có thể MUA THÊM ô trang bị bằng Vàng, giá tăng dần
-  50 triệu mỗi ô (skill_data.next_slot_price). Mỗi skill trang bị chỉ dùng
-  được 1 lần/ván câu, tốn thể lực, hiệu ứng là trừ ngay % độ căng dây hoặc
-  làm chậm tốc độ tăng độ căng dây trong vài giây — không có skill gây
-  thêm sát thương (trừ vài skill damage_fish_hp/slow_then_damage riêng).
+  qua "/đồ_câu_lão_bát" (tab Kỹ Năng — chọn NHÓM điếu pháp trước, rồi mới
+  xem từng skill trong nhóm đó). Có thể MUA THÊM ô trang bị bằng Vàng, giá
+  tăng dần 50 triệu mỗi ô (skill_data.next_slot_price). Mỗi skill dùng lại
+  được VÔ HẠN LẦN/ván câu, chỉ cần hồi xong cooldown + đủ thể lực — hiệu
+  ứng đa dạng: trừ/làm chậm độ căng dây, tăng lực kéo tạm thời, hoặc gây
+  sát thương thẳng theo lực kéo cần (xem skill_data.describe_effect).
 
 THỜI TIẾT (weather_data.py)
 ---------------------------
@@ -50,9 +51,17 @@ Bot tự random 1 thời tiết mới MỖI GIỜ (weather_loop trong CauCaVanCa
 lưu vào Firebase (fishing/weather/current) và thông báo trong đúng kênh
 WEATHER_CHANNEL_ID. Lệnh /thời_tiết chỉ dùng được trong kênh đó. Thời tiết
 hiện tại được áp dụng (snapshot) vào mỗi ván /câu_cá lúc thả cần: cộng
-thêm luck_bonus, nhân thêm tốc độ tăng độ căng dây, và tăng/giảm tỷ lệ
-gặp cá boss/hiếm. 5 loại: Mưa, Giông, Đêm, Hạn Hán, Bảy Sắc Cầu Vồng
-(cực hiếm, buff mạnh nhất).
+thêm luck_bonus, nhân thêm tốc độ tăng độ căng dây, tăng/giảm tỷ lệ gặp cá
+boss/hiếm, và — thay cho /chọn_map đã bị bỏ — quyết định 1 số nhóm cá
+"xịn" có xuất hiện được không (xem fish_data.MAP_WEATHER_REQUIREMENT).
+"Bình Thường" (☀️) là trạng thái mặc định phổ biến nhất, không hiệu ứng gì;
+7 thời tiết đặc biệt còn lại: Mưa, Giông, Đêm, Hạn Hán, Bảy Sắc Cầu Vồng
+(cực hiếm, buff mạnh nhất), Lạnh, Sương Mù.
+
+KHU VỰC CÂU (map)
+-----------------
+ĐÃ BỎ HOÀN TOÀN /chọn_map — câu cá giờ random hoàn toàn trong tier mà lực
+kéo cần câu tiếp cận được, không còn khu vực nào để chọn thủ công nữa.
 """
 
 from __future__ import annotations
@@ -77,13 +86,14 @@ from firebase_db import (
 )
 from fish_data import (
     ALL_FISH, BOSS_FISH_KEYS, FISH_BY_KEY, FISH_BY_TIER, FishTier, JUNK_ITEMS,
-    MAP6_KEY, MAP7_ITEM_KEY, MAP7_ITEM_LABEL, MAP_BY_KEY, MAPS, TIERS,
-    FishSpecies, fish_in_map, is_junk_fish, map_is_unlocked, roll_junk,
+    MAP_BY_KEY, MAP_WEATHER_REQUIREMENT, TIERS,
+    FishSpecies, is_junk_fish, roll_junk,
     tiers_unlocked_for_pull,
 )
 from rod_data import DEFAULT_ROD_KEY, LIMITED_ROD_LIST, RODS, ROD_LIST, Rod
 from skill_data import (
-    SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill, equipped_skill_objects,
+    GROUP_EMOJIS, SKILL_GROUPS, SKILL_SHOP, SKILL_SLOTS, SKILLS, Skill,
+    describe_effect, equipped_skill_objects, skills_in_group,
     slot_count, next_slot_price,
 )
 from weather_data import WEATHER_BY_KEY, WEATHERS, Weather, roll_weather
@@ -308,15 +318,18 @@ def apply_energy_regen(data: dict) -> dict:
 
 
 def roll_fish(
-    rod: Rod, map_key: Optional[str] = None, boss_weight_mult: float = 1.0,
+    rod: Rod, weather_key: Optional[str] = None, boss_weight_mult: float = 1.0,
 ) -> FishSpecies:
-    """Chọn 1 con cá theo cấp mà lực kéo của cần hiện có thể tiếp cận.
-    Cấp cao hơn có trọng số random thấp hơn (khó gặp hơn); trong 1 cấp,
-    cá giá cao hơn cũng hiếm hơn.
+    """Chọn 1 con cá theo cấp mà lực kéo của cần hiện có thể tiếp cận —
+    KHÔNG còn giới hạn theo khu vực câu (/chọn_map đã bị bỏ), random hoàn
+    toàn trong tier. Cấp cao hơn có trọng số random thấp hơn (khó gặp
+    hơn); trong 1 cấp, cá giá cao hơn cũng hiếm hơn.
 
-    Nếu `map_key` được chỉ định: chỉ roll trong số cá thuộc khu vực đó.
-    Nếu khu vực đó chưa có cá nào tương thích với lực kéo hiện tại, tự
-    động rơi về roll không giới hạn khu vực để không bao giờ "câu hụt".
+    `weather_key`: key thời tiết ĐANG hoạt động (weather_data.py, snapshot
+    lúc thả cần) — 1 số nhóm cá "xịn" (xem fish_data.MAP_WEATHER_REQUIREMENT)
+    chỉ được đưa vào pool roll khi thời tiết hiện tại khớp đúng yêu cầu của
+    nhóm cá đó ("câu cá xịn dựa theo thời tiết"); các cá khác không bị ảnh
+    hưởng gì bởi tham số này.
 
     `boss_weight_mult` (thời tiết, xem weather_data.py): nhân thêm vào
     trọng số random của cá "boss" (cá đắt nhất mỗi cấp) — >1 nghĩa là thời
@@ -327,19 +340,20 @@ def roll_fish(
         tiers = [t for t in TIERS if FISH_BY_TIER[t.key]][:1]
 
     def pool_for(tier_key: str) -> list[FishSpecies]:
-        if map_key is None:
-            return FISH_BY_TIER[tier_key]
-        return [f for f in FISH_BY_TIER[tier_key] if f.map_key == map_key]
+        return [
+            f for f in FISH_BY_TIER[tier_key]
+            if f.map_key not in MAP_WEATHER_REQUIREMENT
+            or MAP_WEATHER_REQUIREMENT[f.map_key] == weather_key
+        ]
 
-    if map_key is not None:
-        tiers = [t for t in tiers if pool_for(t.key)]
-        if not tiers:  # khu vực chưa có dữ liệu cá cho lực kéo này -> bỏ lọc map
-            return roll_fish(rod, map_key=None, boss_weight_mult=boss_weight_mult)
+    tiers = [t for t in tiers if pool_for(t.key)]
+    if not tiers:  # thời tiết hiện tại khiến TOÀN BỘ tier khả dụng trống -> fallback an toàn
+        tiers = [t for t in TIERS if FISH_BY_TIER[t.key]][:1]
 
     tier_weights = [1.0 / (i + 1) for i in range(len(tiers))]
     tier = random.choices(tiers, weights=tier_weights)[0]
 
-    pool = pool_for(tier.key)
+    pool = pool_for(tier.key) or FISH_BY_TIER[tier.key]
     max_price = max(f.price for f in pool)
     fish_weights = [
         (max_price / f.price) ** 0.5 * (boss_weight_mult if f.key in BOSS_FISH_KEYS else 1.0)
@@ -370,11 +384,11 @@ ALL_SELLABLE = ALL_FISH + JUNK_ITEMS
 
 
 def roll_catch(
-    rod: Rod, map_key: Optional[str] = None, weather: Optional[Weather] = None,
+    rod: Rod, weather: Optional[Weather] = None,
 ) -> FishSpecies:
     """Quyết định kết quả 1 lần thả cần: có `junk_chance` xác suất ra rác
-    (không phụ thuộc map/lực kéo — rác trôi nổi ở đâu cũng gặp được), còn
-    lại roll cá bình thường qua `roll_fish`. Trả về 1 FishSpecies — dùng
+    (không phụ thuộc lực kéo — rác trôi nổi ở đâu cũng gặp được), còn lại
+    roll cá bình thường qua `roll_fish`. Trả về 1 FishSpecies — dùng
     `fish_data.is_junk_fish(result.key)` ở nơi gọi để phân biệt."""
     junk_chance = BASE_JUNK_CHANCE + (weather.junk_chance_delta if weather else 0.0)
     junk_cap = (weather.junk_chance_cap if weather and weather.junk_chance_cap is not None
@@ -383,7 +397,8 @@ def roll_catch(
     if random.random() < junk_chance:
         return roll_junk()
     boss_weight_mult = weather.boss_weight_mult if weather else 1.0
-    return roll_fish(rod, map_key=map_key, boss_weight_mult=boss_weight_mult)
+    weather_key = weather.key if weather else None
+    return roll_fish(rod, weather_key=weather_key, boss_weight_mult=boss_weight_mult)
 
 
 
@@ -606,11 +621,6 @@ def build_success_view(
             if level_info.get("leveled_up"):
                 exp_line += f"\n<:party:1543465613853327380> **LÊN CẤP {level_info['new_level']}!** Năng lượng đã được hồi đầy."
             exp_line += f"\n{E.ENERGY} **Năng lượng:** `{level_info['energy']}/{level_info['max_energy']}`"
-        if level_info.get("map_item_gained"):
-            exp_line += (
-                f"\n🗺️ **Nhận được vật phẩm:** `{level_info['map_item_gained']}` "
-                f"— mở khóa khu vực **Vực sâu Hà La**!"
-            )
         container.add_item(discord.ui.TextDisplay(exp_line))
     container.add_item(discord.ui.Separator())
     if is_junk:
@@ -644,6 +654,12 @@ def build_weather_view(weather: Weather, expires_at: Optional[float] = None) -> 
         effect_lines.append(f"{E.ROD} Tốc độ căng dây câu: `{sign}{pct:.0%}`")
     if weather.boss_weight_mult != 1.0:
         effect_lines.append(f"<:vuongmien:1543461013045645323> Tỷ lệ gặp cá quý hiếm/boss: `x{weather.boss_weight_mult:.1f}`")
+    if weather.boosted_map_keys:
+        names = ", ".join(
+            MAP_BY_KEY[k].label for k in weather.boosted_map_keys if k in MAP_BY_KEY
+        )
+        if names:
+            effect_lines.append(f"🐟 **Cá đặc biệt chỉ xuất hiện lúc này:** {names}")
     container.add_item(discord.ui.TextDisplay("\n".join(effect_lines)))
 
     if expires_at:
@@ -722,9 +738,15 @@ class ReelView(discord.ui.LayoutView):
             # gian (time.time()) hết hồi chiêu, chỉ set khi skill.cooldown_s > 0
         self.tension_slow_until: float = 0.0   # timestamp, còn hiệu lực "slow_tension" tới lúc này
         self.tension_slow_factor: float = 1.0    # hệ số nhân độ căng dây khi đang có "slow_tension"
+        self.pull_boost_until: float = 0.0        # timestamp, còn hiệu lực "boost_pull" tới lúc này
+        self.pull_boost_mult: float = 1.0           # hệ số nhân lực kéo khi đang có "boost_pull"
         # Hàng chờ sát thương trả chậm (cho effect "slow_then_damage"): mỗi
         # phần tử là (thời điểm áp dụng, % máu cá tối đa gây thêm).
         self.pending_damage: list[tuple[float, float]] = []
+        # Hàng chờ sát thương trả chậm THEO LỰC KÉO (cho "slow_then_damage_value"/
+        # "reduce_slow_then_damage_value"): mỗi phần tử là (thời điểm áp
+        # dụng, hệ số nhân lực kéo, tên skill để hiện cảnh báo nếu trượt).
+        self.pending_pull_damage: list[tuple[float, float, str]] = []
         # Tên skill "Đập cá" (instant_finish) vừa TRƯỢT ở lượt bấm gần nhất
         # (None nếu không trượt) — dùng để hiện dòng cảnh báo trong _render().
         self._last_skill_missed: Optional[str] = None
@@ -791,18 +813,31 @@ class ReelView(discord.ui.LayoutView):
         return (now - self.tension_break_started_at) >= LINE_BREAK_GRACE_SECONDS
 
     def _apply_pending_damage(self, now: float) -> None:
-        """Áp dụng sát thương trả chậm đã đến hạn (effect "slow_then_damage",
-        vd Thái Cực Điệu) — gọi cùng lúc với `_apply_idle_tension` ở mọi nơi
-        cần số liệu máu cá mới nhất."""
-        if not self.pending_damage:
-            return
-        still_pending = []
-        for trigger_at, pct in self.pending_damage:
-            if now >= trigger_at:
-                self.progress += self.target * pct
-            else:
-                still_pending.append((trigger_at, pct))
-        self.pending_damage = still_pending
+        """Áp dụng sát thương trả chậm đã đến hạn (effect "slow_then_damage"
+        theo % máu cá VÀ "slow_then_damage_value"/"reduce_slow_then_damage_value"
+        theo lực kéo, vd Thái Cực Điếu Pháp/Can Môn Đoạn) — gọi cùng lúc với
+        `_apply_idle_tension` ở mọi nơi cần số liệu máu cá mới nhất."""
+        if self.pending_damage:
+            still_pending = []
+            for trigger_at, pct in self.pending_damage:
+                if now >= trigger_at:
+                    self.progress += self.target * pct
+                else:
+                    still_pending.append((trigger_at, pct))
+            self.pending_damage = still_pending
+        if self.pending_pull_damage:
+            still_pending_pull = []
+            for trigger_at, pull_mult, skill_name in self.pending_pull_damage:
+                if now >= trigger_at:
+                    # Vẫn có tỉ lệ TRƯỢT như damage_value bình thường — chỉ
+                    # là "trả chậm", KHÔNG ăn chắc 100%.
+                    if random.random() < INSTANT_FINISH_MISS_CHANCE:
+                        self._last_skill_missed = skill_name
+                    else:
+                        self.progress += self.rod.pull * pull_mult
+                else:
+                    still_pending_pull.append((trigger_at, pull_mult, skill_name))
+            self.pending_pull_damage = still_pending_pull
 
     @tasks.loop(seconds=IDLE_TICK_SECONDS)
     async def _idle_tick(self) -> None:
@@ -1005,8 +1040,11 @@ class ReelView(discord.ui.LayoutView):
             self._apply_pending_damage(now)
 
             # BUFF "op": sát thương/lần kéo cao hơn (1.3-1.8x thay vì 0.9-1.3x)
-            # và luck ăn mạnh hơn (x0.8 thay vì x0.5).
-            dmg = self.rod.pull * random.uniform(1.3, 1.8) * (1 + self.luck_bonus * 0.8)
+            # và luck ăn mạnh hơn (x0.8 thay vì x0.5). pull_mult_active > 1.0
+            # nếu đang có hiệu lực skill "boost_pull"/"boost_pull_and_slow"/
+            # "boost_pull_and_reduce" (xem _on_skill).
+            pull_mult_active = self.pull_boost_mult if now < self.pull_boost_until else 1.0
+            dmg = self.rod.pull * pull_mult_active * random.uniform(1.3, 1.8) * (1 + self.luck_bonus * 0.8)
             self.progress += dmg
 
             slow_mult = self.tension_slow_factor if now < self.tension_slow_until else 1.0
@@ -1135,6 +1173,46 @@ class ReelView(discord.ui.LayoutView):
                     self._last_skill_missed = skill.name
                 else:
                     self.progress += self.rod.pull * skill.value
+            elif skill.effect == "boost_pull":
+                # "Mã Đạt Điếu Pháp" — nhân lực kéo của cần đang dùng lên
+                # skill.value lần trong duration_s giây kế tiếp (áp dụng ở
+                # _on_pull, xem pull_mult_active).
+                self.pull_boost_until = now + skill.duration_s
+                self.pull_boost_mult = skill.value
+            elif skill.effect == "boost_pull_and_slow":
+                # "Điếu Long Bàn Hổ" — boost_pull + slow_tension cùng lúc,
+                # cùng duration_s.
+                self.pull_boost_until = now + skill.duration_s
+                self.pull_boost_mult = skill.value
+                self.tension_slow_until = now + skill.duration_s
+                self.tension_slow_factor = 1.0 - skill.slow_value
+            elif skill.effect == "boost_pull_and_reduce":
+                # "Xuyên Thiên Hầu Chi Điếu" — boost_pull trong duration_s
+                # giây, ĐỒNG THỜI trừ ngay reduce_value% độ căng dây luôn
+                # (không phụ thuộc duration_s).
+                self.pull_boost_until = now + skill.duration_s
+                self.pull_boost_mult = skill.value
+                self.tension = max(0.0, self.tension - self.tension_max * skill.reduce_value)
+            elif skill.effect == "damage_value_sure":
+                # "Đả Ngư Bổng Pháp" — giống damage_value nhưng CHẮC CHẮN
+                # TRÚNG, không có tỉ lệ trượt.
+                self.progress += self.rod.pull * skill.value
+            elif skill.effect == "slow_then_damage_value":
+                # "Thái Cực Điếu Pháp" — làm chậm tension trong duration_s
+                # giây, hết hiệu lực thì gây sát thương bằng bonus_damage_value
+                # lần lực kéo (có tỉ lệ trượt, xem _apply_pending_damage).
+                self.tension_slow_until = now + skill.duration_s
+                self.tension_slow_factor = 1.0 - skill.value
+                self.pending_pull_damage.append((now + skill.duration_s, skill.bonus_damage_value, skill.name))
+            elif skill.effect == "reduce_slow_then_damage_value":
+                # "Can Môn Đoạn" — trừ ngay reduce_value% độ căng dây, làm
+                # chậm tension trong duration_s giây, hết hiệu lực thì gây
+                # sát thương bằng bonus_damage_value lần lực kéo (có tỉ lệ
+                # trượt, xem _apply_pending_damage).
+                self.tension = max(0.0, self.tension - self.tension_max * skill.reduce_value)
+                self.tension_slow_until = now + skill.duration_s
+                self.tension_slow_factor = 1.0 - skill.value
+                self.pending_pull_damage.append((now + skill.duration_s, skill.bonus_damage_value, skill.name))
 
             # Nếu phần tension ngầm đã kịp vượt ngưỡng NGAY TRƯỚC LÚC skill
             # kịp giảm nó xuống thì cũng KHÔNG đứt ngay nữa — vẫn còn
@@ -1478,23 +1556,34 @@ class RodShopView(discord.ui.LayoutView):
 # khỏi ô đó (skill đã ở ô khác sẽ tự được gỡ ra trước khi gán ô mới).
 # ---------------------------------------------------------------------------
 class SkillShopView(discord.ui.LayoutView):
-    def __init__(self, user_id: int, data: dict, index: int = 0):
+    """Shop kỹ năng — 2 CẤP MÀN HÌNH:
+    1. `self.group is None` -> màn "Chọn Nhóm": hiện 1 nút cho mỗi nhóm
+       điếu pháp (skill_data.SKILL_GROUPS) + thông tin ô trang bị đang có
+       (mua thêm ô cũng nằm ở màn này, không phụ thuộc skill/nhóm đang xem).
+    2. `self.group` là 1 tên nhóm -> màn xem skill: phân trang (`self.index`)
+       CHỈ trong số skill thuộc nhóm đó (skill_data.skills_in_group), có nút
+       "◀ Về Nhóm" để quay lại màn chọn nhóm.
+    """
+    def __init__(self, user_id: int, data: dict, group: Optional[str] = None, index: int = 0):
         super().__init__(timeout=120)
         self.user_id = user_id
+        self.group = group
         self.index = index
         self._cid_prev = f"skillshop_prev_{uuid.uuid4().hex}"
         self._cid_next = f"skillshop_next_{uuid.uuid4().hex}"
+        self._cid_back = f"skillshop_back_{uuid.uuid4().hex}"
         self._cid_buy = f"skillshop_buy_{uuid.uuid4().hex}"
         self._cid_buy_slot = f"skillshop_buyslot_{uuid.uuid4().hex}"
+        self._cid_groups = {g: f"skillshop_group_{uuid.uuid4().hex}" for g in SKILL_GROUPS}
         # Số ô có thể tăng khi mua thêm giữa lúc dùng view -> tạo custom_id
         # theo đúng số ô hiện tại của data (không fix cứng SKILL_SLOTS nữa).
         self._cid_slots = [f"skillshop_slot{i}_{uuid.uuid4().hex}" for i in range(slot_count(data))]
         self._render(data)
 
     @classmethod
-    async def create(cls, user_id: int, index: int = 0) -> "SkillShopView":
+    async def create(cls, user_id: int, group: Optional[str] = None, index: int = 0) -> "SkillShopView":
         data = await aget_user_data(user_id)
-        return cls(user_id, data, index)
+        return cls(user_id, data, group, index)
 
     def _render(self, data: dict) -> None:
         self.clear_items()
@@ -1505,7 +1594,68 @@ class SkillShopView(discord.ui.LayoutView):
     def _build_container(self, container: discord.ui.Container, data: dict) -> None:
         """Thêm toàn bộ nội dung shop kỹ năng vào `container` có sẵn — dùng
         chung bởi SkillShopView độc lập và bởi UnifiedShopView khi nhúng."""
-        skill = SKILL_SHOP[self.index]
+        if self.group is None:
+            self._build_group_picker(container, data)
+        else:
+            self._build_skill_pager(container, data)
+
+    # -- Màn 1: chọn nhóm điếu pháp -----------------------------------------
+    def _build_group_picker(self, container: discord.ui.Container, data: dict) -> None:
+        n_slots = slot_count(data)
+        equipped_keys = (list(data.get("equipped_skills", [None] * n_slots))
+                         + [None] * n_slots)[:n_slots]
+
+        lines = ["## 🧩 Kỹ Năng Câu Cá — Chọn Nhóm Điếu Pháp"]
+        for g in SKILL_GROUPS:
+            n = len(skills_in_group(g))
+            n_owned = sum(1 for s in skills_in_group(g) if s.key in set(data.get("unlocked_skills", [])))
+            lines.append(f"{GROUP_EMOJIS.get(g, '🧩')} **{g}** — đã mở `{n_owned}/{n}` chiêu")
+        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        container.add_item(discord.ui.Separator())
+
+        group_row = discord.ui.ActionRow()
+        for g in SKILL_GROUPS:
+            btn = discord.ui.Button(
+                label=g, emoji=GROUP_EMOJIS.get(g), style=discord.ButtonStyle.primary,
+                custom_id=self._cid_groups[g],
+            )
+            btn.callback = self._make_group_cb(g)
+            group_row.add_item(btn)
+        container.add_item(group_row)
+
+        # Nút mua thêm ô trang bị — hiện ở màn chọn nhóm vì đây là thông tin
+        # chung, không phụ thuộc nhóm/skill nào đang xem.
+        price = next_slot_price(data)
+        if price is not None:
+            slot_row = discord.ui.ActionRow()
+            buy_slot_btn = discord.ui.Button(
+                label=f"🧩 Mua Thêm Ô Trang Bị ({fmt_gia_trieu(price)})",
+                style=discord.ButtonStyle.blurple,
+                disabled=data["vang"] < price,
+                custom_id=self._cid_buy_slot,
+            )
+            buy_slot_btn.callback = self._buy_slot
+            slot_row.add_item(buy_slot_btn)
+            container.add_item(slot_row)
+
+        equipped_line = " · ".join(
+            f"Ô{i + 1}: {SKILLS[k].emoji} {SKILLS[k].name}" if k in SKILLS else f"Ô{i + 1}: —"
+            for i, k in enumerate(equipped_keys)
+        )
+        container.add_item(discord.ui.TextDisplay(
+            f"**Đang có {n_slots} ô · Đang trang bị:** {equipped_line}"
+        ))
+
+    # -- Màn 2: phân trang skill trong 1 nhóm --------------------------------
+    def _build_skill_pager(self, container: discord.ui.Container, data: dict) -> None:
+        group_skills = skills_in_group(self.group)
+        # Nhỡ đâu nhóm rỗng (không nên xảy ra) -> quay về màn chọn nhóm an toàn.
+        if not group_skills:
+            self.group = None
+            self._build_group_picker(container, data)
+            return
+        self.index = max(0, min(self.index, len(group_skills) - 1))
+        skill = group_skills[self.index]
         unlocked = set(data.get("unlocked_skills", []))
         owned = skill.key in unlocked
         n_slots = slot_count(data)
@@ -1516,43 +1666,23 @@ class SkillShopView(discord.ui.LayoutView):
         while len(self._cid_slots) < n_slots:
             self._cid_slots.append(f"skillshop_slot{len(self._cid_slots)}_{uuid.uuid4().hex}")
 
-        container.add_item(discord.ui.TextDisplay(
-            f"## {skill.emoji} {skill.name}  ({self.index + 1}/{len(SKILL_SHOP)})"
-        ))
+        back_row = discord.ui.ActionRow()
+        back_btn = discord.ui.Button(
+            label="◀ Về Nhóm", style=discord.ButtonStyle.secondary, custom_id=self._cid_back,
+        )
+        back_btn.callback = self._go_back
+        back_row.add_item(back_btn)
+        container.add_item(back_row)
 
-        if skill.effect == "reduce_tension":
-            effect_line = f"Trừ ngay `{skill.value:.0%}` độ căng dây khi dùng."
-        elif skill.effect == "slow_tension":
-            effect_line = f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`."
-        elif skill.effect == "reduce_then_slow":
-            effect_line = (
-                f"Trừ ngay `{skill.value:.0%}` độ căng dây, đồng thời giảm "
-                f"`{skill.slow_value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s` kế tiếp."
-            )
-        elif skill.effect == "damage_fish_hp":
-            effect_line = f"Gây sát thương ngay bằng `{skill.value:.0%}` máu tối đa của cá."
-        elif skill.effect == "slow_then_damage":
-            effect_line = (
-                f"Giảm `{skill.value:.0%}` tốc độ tăng độ căng dây trong `{skill.duration_s}s`. "
-                f"Sau khi hiệu lực kết thúc, gây thêm `{skill.bonus_damage_pct:.0%}` máu tối đa của cá."
-            )
-        elif skill.effect == "damage_value":
-            effect_line = (
-                f"Gây sát thương ngay bằng `{skill.value:.1f}x` lực kéo của cần đang dùng "
-                f"(KHÔNG theo % máu cá) — có `{1 - INSTANT_FINISH_MISS_CHANCE:.0%}` cơ hội "
-                f"trúng đòn, nếu trượt thì coi như hụt (không mất cá)."
-            )
-        else:  # instant_finish — KHÔNG hiện % (né hết số liệu vì đã có tỉ
-            # lệ trượt riêng, hiện % ở đây dễ gây hiểu lầm là % sát thương).
-            effect_line = (
-                f"Dồn toàn lực kết liễu con mồi — có `{1 - INSTANT_FINISH_MISS_CHANCE:.0%}` "
-                f"cơ hội BẮT CÁ NGAY LẬP TỨC, nếu trượt thì coi như hụt đòn (không mất cá)."
-            )
+        container.add_item(discord.ui.TextDisplay(
+            f"## {GROUP_EMOJIS.get(self.group, '🧩')} {self.group}\n"
+            f"### {skill.emoji} {skill.name}  ({self.index + 1}/{len(group_skills)})"
+        ))
 
         cooldown_note = f", hồi chiêu `{skill.cooldown_s:.0f}s`/lần" if skill.cooldown_s > 0 else ""
         stats = (
             f"{skill.description}\n"
-            f"**Hiệu ứng:** {effect_line}\n"
+            f"**Hiệu ứng:** {describe_effect(skill, INSTANT_FINISH_MISS_CHANCE)}\n"
             f"**Năng lượng tiêu hao:** `{skill.energy_cost}` mỗi lần dùng (dùng lại được vô hạn"
             f"{cooldown_note})\n"
             f"{E.GOLD} Giá: `{fmt_gia_trieu(skill.price_vang)}` Vàng"
@@ -1568,7 +1698,7 @@ class SkillShopView(discord.ui.LayoutView):
         prev_btn.callback = self._go_prev
         next_btn = discord.ui.Button(
             label="Sau ▶", style=discord.ButtonStyle.secondary,
-            disabled=self.index == len(SKILL_SHOP) - 1, custom_id=self._cid_next,
+            disabled=self.index == len(group_skills) - 1, custom_id=self._cid_next,
         )
         next_btn.callback = self._go_next
         nav_row.add_item(prev_btn)
@@ -1602,21 +1732,6 @@ class SkillShopView(discord.ui.LayoutView):
                     row.add_item(slot_btn)
                 container.add_item(row)
 
-        # Nút mua thêm ô trang bị — hiện luôn (không phụ thuộc skill đang
-        # xem), giá tăng dần theo skill_data.next_slot_price().
-        price = next_slot_price(data)
-        if price is not None:
-            slot_row = discord.ui.ActionRow()
-            buy_slot_btn = discord.ui.Button(
-                label=f"🧩 Mua Thêm Ô Trang Bị ({fmt_gia_trieu(price)})",
-                style=discord.ButtonStyle.blurple,
-                disabled=data["vang"] < price,
-                custom_id=self._cid_buy_slot,
-            )
-            buy_slot_btn.callback = self._buy_slot
-            slot_row.add_item(buy_slot_btn)
-            container.add_item(slot_row)
-
         if owned:
             equipped_line = " · ".join(
                 f"Ô{i + 1}: {SKILLS[k].emoji} {SKILLS[k].name}" if k in SKILLS else f"Ô{i + 1}: —"
@@ -1646,6 +1761,26 @@ class SkillShopView(discord.ui.LayoutView):
             return False
         return True
 
+    def _make_group_cb(self, group: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            if not await self._guard(interaction):
+                return
+            await interaction.response.defer()
+            self.group = group
+            self.index = 0
+            data = await aget_user_data(self.user_id)
+            await self._refresh(interaction, data)
+        return _cb
+
+    async def _go_back(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        self.group = None
+        self.index = 0
+        data = await aget_user_data(self.user_id)
+        await self._refresh(interaction, data)
+
     async def _go_prev(self, interaction: discord.Interaction) -> None:
         if not await self._guard(interaction):
             return
@@ -1658,7 +1793,8 @@ class SkillShopView(discord.ui.LayoutView):
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
-        self.index = min(len(SKILL_SHOP) - 1, self.index + 1)
+        n = len(skills_in_group(self.group)) if self.group else 1
+        self.index = min(n - 1, self.index + 1)
         data = await aget_user_data(self.user_id)
         await self._refresh(interaction, data)
 
@@ -1666,7 +1802,7 @@ class SkillShopView(discord.ui.LayoutView):
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
-        skill = SKILL_SHOP[self.index]
+        skill = skills_in_group(self.group)[self.index]
         data = await aget_user_data(self.user_id)
         unlocked = set(data.get("unlocked_skills", []))
         if skill.key in unlocked:
@@ -1688,7 +1824,7 @@ class SkillShopView(discord.ui.LayoutView):
             if not await self._guard(interaction):
                 return
             await interaction.response.defer()
-            skill = SKILL_SHOP[self.index]
+            skill = skills_in_group(self.group)[self.index]
             data = await aget_user_data(self.user_id)
             n_slots = slot_count(data)
             equipped = (list(data.get("equipped_skills", [None] * n_slots))
@@ -2234,94 +2370,6 @@ class SellView(discord.ui.LayoutView):
 
 
 # ---------------------------------------------------------------------------
-# Chọn khu vực câu (map) — Select đơn, chỉ hiện các map người chơi đã đủ
-# cấp độ mở khóa (unlock_level). Lưu lựa chọn vào data["current_map"].
-# ---------------------------------------------------------------------------
-class MapSelectView(discord.ui.LayoutView):
-    def __init__(self, user_id: int, data: dict):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-        self._cid_select = f"map_select_{uuid.uuid4().hex}"
-        self._cid_clear = f"map_clear_{uuid.uuid4().hex}"
-        self._render(data)
-
-    @classmethod
-    async def create(cls, user_id: int) -> "MapSelectView":
-        data = await aget_user_data(user_id)
-        return cls(user_id, data)
-
-    def _render(self, data: dict) -> None:
-        self.clear_items()
-        level = data.get("level", 1)
-        current = data.get("current_map")
-        owned_items = set(data.get("map_items", []) or [])
-        unlocked = [m for m in MAPS if map_is_unlocked(m.key, level, owned_items)]
-        locked = [m for m in MAPS if not map_is_unlocked(m.key, level, owned_items)]
-
-        container = discord.ui.Container(accent_colour=discord.Colour.blurple())
-        container.add_item(discord.ui.TextDisplay("## 🗺️ Chọn Khu Vực Câu"))
-        container.add_item(discord.ui.Separator())
-
-        current_label = "🌐 Tất cả khu vực (mặc định)"
-        if current and current in MAP_BY_KEY:
-            m = MAP_BY_KEY[current]
-            current_label = f"{m.emoji} {m.label}"
-        lines = [f"**Đang chọn:** {current_label}"]
-        if locked:
-            lock_bits = []
-            for m in locked:
-                reason = f"mở ở Lv.{m.unlock_level}"
-                if m.requires_item and m.requires_item not in owned_items:
-                    reason += " + cần vật phẩm bản đồ"
-                lock_bits.append(f"🔒 {m.emoji} {m.label} — {reason}")
-            lines.append("\n**Chưa mở khóa:**\n" + "\n".join(lock_bits))
-        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
-        container.add_item(discord.ui.Separator())
-
-        options = [
-            discord.SelectOption(
-                label="Tất cả khu vực", description="Câu ngẫu nhiên, không giới hạn khu vực",
-                emoji="🌐", value="__all__", default=current is None,
-            )
-        ]
-        for m in unlocked:
-            options.append(discord.SelectOption(
-                label=m.label, emoji=m.emoji, value=m.key,
-                description=f"{len(fish_in_map(m.key))} loài cá" if fish_in_map(m.key) else "Chưa có dữ liệu cá",
-                default=(current == m.key),
-            ))
-
-        select = discord.ui.Select(
-            placeholder="Chọn khu vực muốn câu...",
-            custom_id=self._cid_select,
-            options=options[:25],
-        )
-        select.callback = self._on_select
-        row = discord.ui.ActionRow()
-        row.add_item(select)
-        container.add_item(row)
-
-        self.add_item(container)
-
-    async def _guard(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Đây không phải lựa chọn của bạn!", ephemeral=True)
-            return False
-        return True
-
-    async def _on_select(self, interaction: discord.Interaction) -> None:
-        if not await self._guard(interaction):
-            return
-        await interaction.response.defer()
-        chosen = interaction.data["values"][0]
-        data = await aget_user_data(self.user_id)
-        data["current_map"] = None if chosen == "__all__" else chosen
-        await asave_user_data(self.user_id, data)
-        self._render(data)
-        await interaction.edit_original_response(view=self)
-
-
-# ---------------------------------------------------------------------------
 # Bảng xếp hạng — "/bảng_xếp_hạng": 1 view gộp 2 tab [Cân Nặng] [Vàng], style
 # tab y hệt UnifiedShopView. Top 10 mỗi bảng, đọc 1 LẦN toàn bộ fishing/users
 # (aget_all_users) rồi tự sắp xếp — không cần index/nhánh riêng trên Firebase
@@ -2599,7 +2647,7 @@ class CauCaVanCan(commands.Cog):
         if weather:
             luck_bonus += weather.luck_delta
 
-        fish = roll_catch(rod, map_key=data.get("current_map"), weather=weather)
+        fish = roll_catch(rod, weather=weather)
         is_boss = fish.key in BOSS_FISH_KEYS
         is_junk = is_junk_fish(fish.key)
         rank_label, rank_badge = rank_for_score(data["score"])
@@ -2622,7 +2670,6 @@ class CauCaVanCan(commands.Cog):
                 "new_level": fresh.get("level", 1),
                 "energy": fresh["energy"],
                 "max_energy": max_energy_for_level(fresh.get("level", 1)),
-                "map_item_gained": None,
             }
 
             if success is True:
@@ -2637,15 +2684,6 @@ class CauCaVanCan(commands.Cog):
                     fresh["score"] = fresh.get("score", 0) + 10
                     if fish.weight_can:
                         fresh["total_weight_can"] = fresh.get("total_weight_can", 0.0) + fish.weight_can
-
-                    # Câu được 1 trong các cá boss của Map 6 (Hố Đen) ->
-                    # thưởng "Bản Đồ Vực Sâu Hà La", vật phẩm mở khóa Map 7.
-                    if is_boss and fish.map_key == MAP6_KEY:
-                        owned_items = set(fresh.get("map_items", []) or [])
-                        if MAP7_ITEM_KEY not in owned_items:
-                            owned_items.add(MAP7_ITEM_KEY)
-                            fresh["map_items"] = list(owned_items)
-                            result["map_item_gained"] = MAP7_ITEM_LABEL
 
                     exp_gain = exp_for_fish(fish)
                     fresh, leveled_up, _levels_gained = add_exp(fresh, exp_gain)
@@ -2677,12 +2715,6 @@ class CauCaVanCan(commands.Cog):
             weather=weather, on_continue=on_continue,
         )
         view.message = await interaction.followup.send(view=view, wait=True)
-
-    @app_commands.command(name="chọn_map", description="Chọn khu vực câu cá")
-    async def chon_map(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        view = await MapSelectView.create(user_id=interaction.user.id)
-        await interaction.followup.send(view=view)
 
     @app_commands.command(
         name="bảng_xếp_hạng",

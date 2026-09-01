@@ -1,9 +1,12 @@
 """
 fish_data.py
 ============
-Dữ liệu các loài cá, chia theo cấp bậc giá (tier, dùng cho menu "Bán Cá")
-và khu vực câu (map, dùng cho /chọn_map + roll cá lúc /câu_cá). 2 trục này
-ĐỘC LẬP với nhau: 1 map có thể chứa cá thuộc nhiều tier giá khác nhau.
+Dữ liệu các loài cá, chia theo cấp bậc giá (tier, dùng cho menu "Bán Cá").
+map_key trên mỗi FishSpecies giờ CHỈ còn mang tính phân loại/chú thích lịch
+sử (/chọn_map đã bị bỏ hoàn toàn — xem MAP_WEATHER_REQUIREMENT bên dưới) —
+cá random hoàn toàn theo tier mà lực kéo cần câu hiện có thể tiếp cận (xem
+fishing_cog.roll_fish), TRỪ 1 số nhóm cá "xịn" được gate theo THỜI TIẾT
+(weather_data.py) thay vì theo map như trước.
 
 GHI CHÚ QUAN TRỌNG
 ------------------
@@ -15,9 +18,9 @@ GHI CHÚ QUAN TRỌNG
   trong đợt làm lại này (vd Cấp Triệu Cân) vẫn giữ fallback tự động chọn
   cá đắt nhất trong tier làm boss, để không phá vỡ hành vi cũ ở phần chưa
   có yêu cầu mới.
-- Map 7 (Vực Sâu Hà La) yêu cầu vật phẩm "Bản Đồ Vực Sâu Hà La"
-  (MAP7_ITEM_KEY) ngoài cấp độ — vật phẩm này được thưởng khi câu được 1
-  trong 3 cá boss của Map 6 (xem cấp code trong fishing_cog.py).
+- Map 7 (Vực Sâu Hà La) TỪNG yêu cầu vật phẩm bản đồ ngoài cấp độ (thưởng
+  khi câu boss Map 6) — cơ chế này ĐÃ BỎ cùng với /chọn_map. Cá Map 7
+  (tier Sơn Hải) giờ gate theo THỜI TIẾT thay thế, xem MAP_WEATHER_REQUIREMENT.
 - Map 8 (Hậu Viện Nam Cương) và Map 9 (Sông Băng Cực): CHƯA có ảnh gốc
   xác nhận khối lượng/đơn giá — 4 con cá ở 2 map này (Đại Côn x2, Côn Hộ
   Pháp Khổng Lồ, Côn Băng Hà) dùng số liệu ƯỚC LƯỢNG tạm thời, cần chỉnh
@@ -97,11 +100,12 @@ class FishSpecies:
 
 @dataclass(frozen=True)
 class FishingMap:
+    """LỊCH SỬ — chỉ còn dùng để có label/emoji hiển thị cho map_key (vd
+    trong build_weather_view khi liệt kê cá đặc biệt của thời tiết). KHÔNG
+    còn unlock_level/requires_item nào (/chọn_map đã bị bỏ hoàn toàn)."""
     key: str
     label: str
     emoji: str
-    unlock_level: int = 0   # 0 = mở sẵn, >0 = cần đạt cấp độ này mới câu được
-    requires_item: str | None = None  # key vật phẩm cần có thêm để mở (ngoài unlock_level)
 
 
 @dataclass(frozen=True)
@@ -112,17 +116,11 @@ class FishTier:
 
 
 # ---------------------------------------------------------------------------
-# Vật phẩm mở khóa Map 7 — thưởng khi câu được 1 trong các cá boss của Map 6
-# (xem CATCH_ITEM_DROPS bên dưới + xử lý cộng vào data["map_items"] trong
-# fishing_cog.py).
-# ---------------------------------------------------------------------------
-MAP7_ITEM_KEY = "ban_do_vuc_sau_ha_la"
-MAP7_ITEM_LABEL = "Bản Đồ Vực Sâu Hà La"
-
-# ---------------------------------------------------------------------------
-# Khu vực câu cá — 9 map theo đúng yêu cầu (thay toàn bộ bộ map cũ).
-# unlock_level: cấp độ NGƯỜI CHƠI (data["level"]) cần đạt để chọn được khu
-# vực này trong /chọn_map — xem MapSelectView trong fishing_cog.py.
+# Khu vực câu cá (LỊCH SỬ) — 9 "map" giữ lại CHỈ để phân loại/gắn nhãn
+# map_key trên FishSpecies (label/emoji hiển thị chỗ khác nếu cần); KHÔNG
+# còn unlock_level/requires_item nào được kiểm tra ở đâu nữa (/chọn_map đã
+# bị bỏ hoàn toàn — xem MAP_WEATHER_REQUIREMENT bên dưới để biết cơ chế
+# gate MỚI theo thời tiết).
 # ---------------------------------------------------------------------------
 MAP1_KEY = "ho_bo_hoang"
 MAP2_KEY = "ho_thuy_dien"
@@ -135,18 +133,37 @@ MAP8_KEY = "hau_vien_nam_cuong"
 MAP9_KEY = "song_bang_cuc"
 
 MAPS: list[FishingMap] = [
-    FishingMap(MAP1_KEY, "Hồ chứa nước bỏ hoang", "🏞️", unlock_level=1),
-    FishingMap(MAP2_KEY, "Hồ thủy điện gần nhà máy điện hạt nhân", "🌊", unlock_level=10),
-    FishingMap(MAP3_KEY, "Hồ cao nguyên trên 5.000 m", "🏔️", unlock_level=20),
-    FishingMap(MAP4_KEY, "Đập nước", "🏗️", unlock_level=30),
-    FishingMap(MAP5_KEY, "Khu vực nước thải hạt nhân", "☢️", unlock_level=45),
-    FishingMap(MAP6_KEY, "Hố đen", "🕳️", unlock_level=60),
-    # Cần Lv.60 + vật phẩm "Bản Đồ Vực Sâu Hà La" (rơi từ boss Map 6).
-    FishingMap(MAP7_KEY, "Vực sâu Hà La", "🌀", unlock_level=60, requires_item=MAP7_ITEM_KEY),
-    FishingMap(MAP8_KEY, "Hậu viện Nam Cương", "🏯", unlock_level=80),
-    FishingMap(MAP9_KEY, "Sông băng cực", "🧊", unlock_level=80),
+    FishingMap(MAP1_KEY, "Hồ chứa nước bỏ hoang", "🏞️"),
+    FishingMap(MAP2_KEY, "Hồ thủy điện gần nhà máy điện hạt nhân", "🌊"),
+    FishingMap(MAP3_KEY, "Hồ cao nguyên trên 5.000 m", "🏔️"),
+    FishingMap(MAP4_KEY, "Đập nước", "🏗️"),
+    FishingMap(MAP5_KEY, "Khu vực nước thải hạt nhân", "☢️"),
+    FishingMap(MAP6_KEY, "Hố đen", "🕳️"),
+    FishingMap(MAP7_KEY, "Vực sâu Hà La", "🌀"),
+    FishingMap(MAP8_KEY, "Hậu viện Nam Cương", "🏯"),
+    FishingMap(MAP9_KEY, "Sông băng cực", "🧊"),
 ]
 MAP_BY_KEY: dict[str, FishingMap] = {m.key: m for m in MAPS}
+
+# ---------------------------------------------------------------------------
+# ĐÃ BỎ /chọn_map — không còn khu vực câu nào gate được chọn thủ công nữa,
+# cá random HOÀN TOÀN trong tier mà lực kéo cần câu tiếp cận được (xem
+# fishing_cog.roll_fish). MAPS/FishingMap ở trên giờ CHỈ còn mang tính phân
+# loại/chú thích cho map_key trên từng FishSpecies — unlock_level/
+# requires_item không còn được kiểm tra ở đâu nữa.
+#
+# THAY VÀO ĐÓ: 1 số nhóm cá "xịn" từng gate theo map giờ gate theo THỜI TIẾT
+# (weather_data.py) — "câu cá xịn thì dựa theo thời tiết". map_key nào có
+# mặt trong dict này thì CHỈ xuất hiện được trong roll_fish khi thời tiết
+# đang hoạt động đúng bằng weather key tương ứng; map_key KHÔNG có trong
+# dict (đa số) thì không bị ảnh hưởng gì bởi thời tiết, random như bình
+# thường. Thêm dòng mới vào đây (và weather_data.Weather.boosted_map_keys
+# tương ứng, để hiện thông báo trong /thời_tiết) khi muốn gate thêm nhóm cá
+# khác theo thời tiết khác.
+# ---------------------------------------------------------------------------
+MAP_WEATHER_REQUIREMENT: dict[str, str] = {
+    MAP7_KEY: "mua",  # Hà La Ngư (Sơn Hải) chỉ xuất hiện khi trời MƯA
+}
 
 
 # ---------------------------------------------------------------------------
@@ -467,21 +484,10 @@ def is_boss_fish(fish_key: str) -> bool:
 
 
 def fish_in_map(map_key: str) -> list[FishSpecies]:
-    """Cá đã gán vào khu vực `map_key` (cá chưa xác định map trả về rỗng)."""
+    """Cá đã gán vào khu vực `map_key` (cá chưa xác định map trả về rỗng) —
+    chỉ còn dùng cho mục đích tra cứu/thống kê, KHÔNG còn ảnh hưởng gì tới
+    roll_fish (/chọn_map đã bị bỏ)."""
     return FISH_BY_MAP.get(map_key, [])
-
-
-def map_is_unlocked(map_key: str, level: int, map_items: set[str] | list[str] | None = None) -> bool:
-    """1 map mở được khi đủ cấp độ VÀ (nếu map yêu cầu vật phẩm) đã có vật
-    phẩm đó trong data["map_items"]. Dùng ở MapSelectView (fishing_cog.py)."""
-    m = MAP_BY_KEY.get(map_key)
-    if m is None:
-        return False
-    if level < m.unlock_level:
-        return False
-    if m.requires_item and m.requires_item not in (map_items or ()):
-        return False
-    return True
 
 
 def tiers_unlocked_for_pull(pull: int) -> list[FishTier]:
